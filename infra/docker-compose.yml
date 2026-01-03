@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: pph-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pph_db
+      POSTGRES_USER: pph_user
+      POSTGRES_PASSWORD: pph123
+    ports:
+      - "5432:5432"
+    volumes:
+      - pph_pgdata:/var/lib/postgresql/data
+
+volumes:
+  pph_pgdata:
