@@ -161,13 +161,13 @@ test_*.py
 Thumbs.db
 .DS_Store
 
-# Project specific
+# Project specific - debug/test files
 backend/debug_*.py
 backend/test_*.py
-*.md
-!README.md
 
-# Keep important docs
+# Keep important documentation
+!README.md
 !PROJECT_ANALYSIS.md
 !backend/AUTH_README.md
+!FINAL_AUTH_TEST_RESULTS.md
 
