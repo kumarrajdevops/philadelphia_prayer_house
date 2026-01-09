@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal
@@ -9,20 +9,9 @@ from .schemas import (
     PrayerCreate,
     PrayerResponse,
 )
+from .deps import get_db, require_pastor
 
 router = APIRouter()
-
-
-# =========================
-# Database Dependency
-# =========================
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 
 # =========================
@@ -55,22 +44,23 @@ def list_users(
 # Prayer Routes
 # =========================
 
-@router.post("/prayers", response_model=PrayerResponse)
+@router.post("/prayers", response_model=PrayerResponse, status_code=status.HTTP_201_CREATED)
 def create_prayer(
     prayer: PrayerCreate,
-    db: Session = Depends(get_db)
+    current_user: User = Depends(require_pastor),
+    db: Session = Depends(get_db),
 ):
     """
-    TEMPORARY IMPLEMENTATION:
-    created_by is set to NULL.
-    Later this will be filled from auth context.
+    Create a new prayer.
+    Only pastors and admins can create prayers.
+    The created_by field is automatically set to the current user.
     """
     db_prayer = Prayer(
         title=prayer.title,
         prayer_date=prayer.prayer_date,
         start_time=prayer.start_time,
         end_time=prayer.end_time,
-        created_by=None  # intentional for now
+        created_by=current_user.id,
     )
     db.add(db_prayer)
     db.commit()
@@ -82,6 +72,7 @@ def create_prayer(
 def list_prayers(
     db: Session = Depends(get_db)
 ):
+    """List all prayers. Public endpoint - no authentication required."""
     return (
         db.query(Prayer)
         .order_by(Prayer.prayer_date, Prayer.start_time)

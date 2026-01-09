@@ -46,7 +46,7 @@ class PrayerResponse(PrayerCreate):
     Response schema returned by API.
     """
     id: int
-    created_by: Optional[int] = None
+    created_by: int  # Now required, not optional
 
     class Config:
         from_attributes = True

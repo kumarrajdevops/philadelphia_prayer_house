@@ -18,6 +18,9 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
+    prayers = relationship("Prayer", back_populates="creator")
+
+
 class Prayer(Base):
     __tablename__ = "prayers"
 
@@ -32,10 +35,11 @@ class Prayer(Base):
         Integer,
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
-        index=True
+        index=True,
     )
 
-    creator = relationship("User", backref="prayers")
+    creator = relationship("User", back_populates="prayers")
+
 
 # optional composite index (date + creator)
 Index("ix_prayers_date_creator", Prayer.prayer_date, Prayer.created_by)
