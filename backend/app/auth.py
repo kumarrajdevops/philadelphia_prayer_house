@@ -133,9 +133,14 @@ def verify_otp(
     db: Session,
     otp_code: str,
     phone: Optional[str] = None,
-    email: Optional[str] = None
+    email: Optional[str] = None,
+    mark_verified: bool = True
 ) -> Optional[OTP]:
-    """Verify an OTP code."""
+    """
+    Verify an OTP code.
+    If mark_verified is False, only checks validity without marking as used.
+    This allows checking OTP before creating user, preventing OTP consumption on failed registration.
+    """
     if not phone and not email:
         return None
     
@@ -159,9 +164,10 @@ def verify_otp(
     if otp_record.otp_code != otp_code:
         return None
     
-    # Mark as verified
-    otp_record.is_verified = True
-    db.commit()
+    # Mark as verified only if requested (after successful user creation/login)
+    if mark_verified:
+        otp_record.is_verified = True
+        db.commit()
     
     return otp_record
 
@@ -201,8 +207,22 @@ def send_otp_email(email: str, otp_code: str) -> bool:
 # =========================
 
 def authenticate_user(db: Session, username: str, password: str) -> Optional[User]:
-    """Authenticate a user with username and password."""
+    """
+    Authenticate a user with username OR email and password.
+    Accepts either username or email in the username field.
+    
+    Returns None if:
+    - User not found
+    - User is inactive
+    - User has no password (OTP-only user)
+    - Password is incorrect
+    """
+    # Try username first
     user = db.query(User).filter(User.username == username).first()
+    
+    # If not found, try email
+    if not user:
+        user = db.query(User).filter(User.email == username).first()
     
     if not user:
         return None
@@ -210,9 +230,11 @@ def authenticate_user(db: Session, username: str, password: str) -> Optional[Use
     if not user.is_active:
         return None
     
+    # Check if user has password set (required for password login)
     if not user.hashed_password:
-        return None  # User registered with OTP only
+        return None  # User is OTP-only, password login not available
     
+    # Verify password
     if not verify_password(password, user.hashed_password):
         return None
     

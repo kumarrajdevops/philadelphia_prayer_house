@@ -27,7 +27,7 @@ cd backend
 # Create virtual environment
 python -m venv venv
 .\venv\Scripts\activate  # Windows
-source venv/bin/activate  # Linux/Mac
+source venv/Scripts/activate  # Linux/Mac
 
 # Install dependencies
 pip install -r requirements.txt
@@ -106,7 +106,11 @@ POST /auth/login
 Content-Type: application/x-www-form-urlencoded
 
 username=johndoe&password=securepassword123
+# OR
+username=john@example.com&password=securepassword123
 ```
+
+**Note:** Login accepts either username OR email. Password login only works if user has set a password during registration.
 
 **Response:**
 ```json
@@ -139,13 +143,22 @@ Content-Type: application/json
 
 {
   "otp_code": "123456",
-  "phone": "+1234567890",  // OR "email": "user@example.com"
-  "name": "John Doe",      // Required for new users
-  "username": "johndoe"    // Required for new users
+  "phone": "+1234567890",      // OR "email": "user@example.com"
+  "name": "John Doe",          // Required for new users only
+  "username": "johndoe",       // Required for new users only
+  "email_optional": "john@example.com",  // Optional - separate from OTP email/phone
+  "password": "securepass123"  // Optional - enables future password login (min 6 chars)
 }
 ```
 
-**Note:** If user doesn't exist, they will be automatically registered. If user exists, they will be logged in.
+**Registration Flow:**
+- If user **doesn't exist** → Requires `name` and `username`, optionally `email_optional` and `password`
+- If user **exists** → Just needs `otp_code` and `phone`/`email` (logs in immediately)
+
+**Password Options:**
+- **With password:** User can login with username/email + password later
+- **Without password:** User is OTP-only (must use OTP login)
+- Password can be added later in user settings (future feature)
 
 ### Token Management
 
@@ -167,12 +180,15 @@ Authorization: Bearer <access_token>
 
 ### Security Features
 
-- ✅ Password hashing with Bcrypt
+- ✅ Password hashing with Bcrypt (optional - supports OTP-only users)
 - ✅ JWT tokens (access + refresh)
 - ✅ OTP expiration (10 minutes default)
+- ✅ OTP verification without consumption (retry-friendly for registration)
 - ✅ Token refresh mechanism
 - ✅ User status control (`is_active` flag)
 - ✅ CORS configured for mobile app
+- ✅ Email or username login support
+- ✅ Clear error messages for OTP-only users attempting password login
 
 ---
 
@@ -201,7 +217,7 @@ Authorization: Bearer <access_token>
 | Endpoint | Method | Description | Auth Required |
 |----------|--------|-------------|---------------|
 | `/prayers` | GET | List prayers | No |
-| `/prayers` | POST | Create prayer | No |
+| `/prayers` | POST | Create prayer (Pastor/Admin only) | Yes |
 
 ### Health Check
 
@@ -219,7 +235,7 @@ Authorization: Bearer <access_token>
 - id (PK, Integer)
 - name (String, NOT NULL)
 - username (String, UNIQUE, NOT NULL, INDEXED)
-- hashed_password (String, NULLABLE - for OTP-only users)
+- hashed_password (String, NULLABLE - OTP-only users have NULL)
 - phone (String, UNIQUE, NULLABLE, INDEXED)
 - email (String, UNIQUE, NULLABLE, INDEXED)
 - role (String, default: "member")
@@ -319,25 +335,62 @@ API docs (Swagger): `http://localhost:8000/docs`
 
 ## 🧪 Testing
 
-### Run Authentication Tests
+### Backend API Testing
 
+**Option 1: Swagger UI (Recommended)**
+- Navigate to: `http://localhost:8000/docs`
+- Interactive API testing with authentication
+- Test all endpoints with real requests
+
+**Option 2: Manual API Tests**
 ```bash
-cd backend
-python test_full_auth.py
+# Health check
+curl http://localhost:8000/health
+
+# Password registration
+curl -X POST http://localhost:8000/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Test User","username":"testuser","password":"test123"}'
+
+# Password login (username or email)
+curl -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=testuser&password=test123"
+
+# OTP request
+curl -X POST http://localhost:8000/auth/otp/request \
+  -H "Content-Type: application/json" \
+  -d '{"phone":"+1234567890"}'
 ```
 
-### Test Results
+### Flutter App Testing
 
-✅ **All Core Tests Passing:**
-- Password Registration
-- Password Login
-- Get Current User
-- Token Refresh
-- OTP Request
+1. **Password Login:**
+   - Enter username/email and password
+   - Should login and navigate to home screen
 
-### Manual Testing
+2. **OTP Login (Existing User):**
+   - Request OTP with registered phone/email
+   - Enter OTP code
+   - Should login immediately
 
-Use Swagger UI at `http://localhost:8000/docs` for interactive API testing.
+3. **OTP Registration (New User):**
+   - Request OTP with new phone/email
+   - Enter OTP code
+   - Check "New user? Register with OTP"
+   - Fill: Name (required), Username (required), Email (optional), Password (optional)
+   - Should create user and login
+
+4. **Password Login (After Registration with Password):**
+   - Register via OTP with password
+   - Logout
+   - Login with username/email + password
+   - Should work successfully
+
+5. **Password Login (OTP-only User):**
+   - Register via OTP without password
+   - Try password login
+   - Should show: "Password login not enabled for this account. Please use OTP login instead."
 
 ---
 
@@ -345,22 +398,25 @@ Use Swagger UI at `http://localhost:8000/docs` for interactive API testing.
 
 ### ✅ Completed Features
 
-- [x] User registration & login
-- [x] JWT token authentication
-- [x] OTP-based authentication (request)
+- [x] User registration & login (password-based)
+- [x] User registration & login (OTP-based with optional password)
+- [x] JWT token authentication (access + refresh)
+- [x] OTP request & verification (with new user registration)
+- [x] Email OR username login support
 - [x] Token refresh mechanism
-- [x] User profile management
+- [x] User profile management (`/auth/me`)
 - [x] Database migrations
 - [x] CORS configuration
-- [x] Basic Flutter app structure
+- [x] Role-based access control (Pastor/Admin for prayer creation)
+- [x] Secure prayer creation (authenticated, role-enforced)
+- [x] Flutter authentication UI (Password + OTP)
+- [x] Token storage & auto-attachment
 
 ### 🚧 In Progress
 
-- [ ] Secure prayer creation (role-based)
-- [ ] OTP verification (manual test needed)
-- [ ] Role-based access control
-- [ ] Prayer requests
+- [ ] Prayer requests API & UI
 - [ ] Events management
+- [ ] User settings (password change, email update)
 
 ### 📋 Planned Features
 
@@ -386,10 +442,11 @@ Use Swagger UI at `http://localhost:8000/docs` for interactive API testing.
 - **Validation:** Pydantic 2.12.5
 
 ### Frontend
-- **Framework:** Flutter 3.10.4
+- **Framework:** Flutter 3.10.4+
 - **Language:** Dart
-- **HTTP Client:** http 1.2.0
-- **UI:** Material Design
+- **HTTP Client:** http 1.2.1
+- **Storage:** shared_preferences 2.2.3 (token storage)
+- **UI:** Material Design (blue theme)
 
 ### Infrastructure
 - **Containerization:** Docker & Docker Compose
@@ -400,15 +457,17 @@ Use Swagger UI at `http://localhost:8000/docs` for interactive API testing.
 ## 🚀 Next Steps
 
 ### Immediate (Priority 1)
-1. **Secure Prayer Creation**
-   - Lock `created_by` field with authentication
-   - Add pastor-only prayer creation
-   - Update Flutter app
+1. **User Settings & Profile Management**
+   - Password change for users with passwords
+   - Set password for OTP-only users
+   - Email update/verification
+   - Profile edit (name, username)
 
-2. **Role-Based Access Control**
-   - Add protected routes
-   - Test pastor/admin access
-   - Test member restrictions
+2. **Prayer Requests Feature**
+   - Create prayer_requests table
+   - Add API endpoints (create, list, update, delete)
+   - Privacy settings (private/public)
+   - Flutter UI for prayer requests
 
 ### Short Term (Priority 2)
 3. **Prayer Requests**
@@ -476,6 +535,32 @@ Private project for Philadelphia Prayer House
 ## 👥 Contributors
 
 - Development Team
+
+---
+
+## 📝 Recent Updates
+
+### Latest Features (2026-01-03)
+- ✅ Optional password in OTP registration
+- ✅ Email OR username login support
+- ✅ Enhanced OTP verification (retry-friendly)
+- ✅ Flutter authentication UI complete
+- ✅ Secure prayer creation (Pastor/Admin only)
+- ✅ Clear error messages for OTP-only users
+
+### Authentication Flow Summary
+1. **Registration Options:**
+   - Password-based (admin/pastor-created accounts)
+   - OTP-based with optional password (member self-registration)
+   - OTP-only (no password, use OTP login only)
+
+2. **Login Options:**
+   - Username/Email + Password (if password set)
+   - Phone/Email + OTP (always available)
+
+3. **User Types:**
+   - **Password Users:** Can login with username/email + password OR OTP
+   - **OTP-only Users:** Must use OTP login (password login disabled)
 
 ---
 

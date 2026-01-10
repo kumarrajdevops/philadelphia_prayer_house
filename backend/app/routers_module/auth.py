@@ -70,8 +70,22 @@ class OTPVerify(BaseModel):
     otp_code: str = Field(..., min_length=4, max_length=8)
     phone: Optional[str] = None
     email: Optional[EmailStr] = None
-    name: Optional[str] = None  # For registration
-    username: Optional[str] = None  # For registration
+    name: Optional[str] = Field(None, description="Required for new user registration")
+    username: Optional[str] = Field(None, description="Required for new user registration")
+    email_optional: Optional[EmailStr] = Field(None, description="Optional email address for registration (separate from OTP phone/email)")
+    password: Optional[str] = Field(None, min_length=6, description="Optional password for future password-based login. Minimum 6 characters.")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "otp_code": "123456",
+                "phone": "+1234567890",
+                "name": "John Doe",
+                "username": "johndoe",
+                "email_optional": "john@example.com",
+                "password": "securepass123"
+            }
+        }
 
 
 class UserRegister(BaseModel):
@@ -80,7 +94,7 @@ class UserRegister(BaseModel):
     username: str
     password: str
     phone: Optional[str] = None
-    email: Optional[EmailStr] = None
+    email: Optional[EmailStr] = Field(None, description="Optional email address")
     role: str = "member"
 
 
@@ -173,19 +187,37 @@ def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db)
 ):
-    """Login with username and password."""
+    """
+    Login with username OR email and password.
+    Accepts either username or email in the username field.
+    
+    Note: Only works if user has set a password during registration.
+    OTP-only users should use OTP login instead.
+    """
     user = authenticate_user(db, form_data.username, form_data.password)
     
     if not user:
+        # Check if user exists but has no password (OTP-only)
+        temp_user = db.query(User).filter(
+            (User.username == form_data.username) | (User.email == form_data.username)
+        ).first()
+        
+        if temp_user and not temp_user.hashed_password:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Password login not enabled for this account. Please use OTP login instead.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail="Incorrect username/email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    # Create tokens
-    access_token = create_access_token(data={"sub": user.id, "username": user.username, "role": user.role})
-    refresh_token = create_refresh_token(data={"sub": user.id})
+    # Create tokens (convert user.id to string for JWT)
+    access_token = create_access_token(data={"sub": str(user.id), "username": user.username, "role": user.role})
+    refresh_token = create_refresh_token(data={"sub": str(user.id)})
     
     return {
         "access_token": access_token,
@@ -238,6 +270,7 @@ def verify_otp_login(otp_data: OTPVerify, db: Session = Depends(get_db)):
     Verify OTP and login/register.
     If user exists, logs them in.
     If user doesn't exist and name/username provided, registers them.
+    OTP is only marked as verified after successful user creation/login.
     """
     if not otp_data.phone and not otp_data.email:
         raise HTTPException(
@@ -245,18 +278,19 @@ def verify_otp_login(otp_data: OTPVerify, db: Session = Depends(get_db)):
             detail="Either phone or email must be provided"
         )
     
-    # Verify OTP
+    # Verify OTP WITHOUT marking as used yet (to allow retry if user creation fails)
     otp_record = verify_otp(
         db=db,
         otp_code=otp_data.otp_code,
         phone=otp_data.phone,
-        email=otp_data.email
+        email=otp_data.email,
+        mark_verified=False  # Don't mark as used yet
     )
     
     if not otp_record:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired OTP"
+            detail="Invalid or expired OTP. Please try again."
         )
     
     # Check if user exists
@@ -267,33 +301,90 @@ def verify_otp_login(otp_data: OTPVerify, db: Session = Depends(get_db)):
         if not otp_data.name or not otp_data.username:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Name and username required for registration"
+                detail="Name and username are required for new user registration. Please check 'New user? Register with OTP' and fill the details."
             )
         
         # Check if username exists
-        if db.query(User).filter(User.username == otp_data.username).first():
+        existing_username = db.query(User).filter(User.username == otp_data.username).first()
+        if existing_username:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Username already taken"
+                detail="Username already taken. Please choose a different username."
             )
         
-        # Create user (no password, OTP-only)
-        user = User(
-            name=otp_data.name,
-            username=otp_data.username,
-            hashed_password=None,  # OTP-only user
-            phone=otp_data.phone,
-            email=otp_data.email,
-            role="member"
-        )
+        # Check if email already exists (if provided)
+        if otp_data.email_optional:
+            existing_email = db.query(User).filter(User.email == otp_data.email_optional).first()
+            if existing_email:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Email already registered. Please use login instead."
+                )
         
-        db.add(user)
+        # Determine email: use optional email if provided, otherwise use email if it was used for OTP
+        final_email = None
+        if otp_data.email_optional:
+            final_email = otp_data.email_optional
+        elif otp_data.email and "@" in str(otp_data.email):
+            final_email = otp_data.email
+        # If phone was used, email stays None
+        
+        # Hash password if provided (optional - allows OTP-only users)
+        hashed_password = None
+        if otp_data.password:
+            hashed_password = get_password_hash(otp_data.password)
+        
+        # Create user (with optional password)
+        try:
+            user = User(
+                name=otp_data.name,
+                username=otp_data.username,
+                hashed_password=hashed_password,  # Can be None for OTP-only users
+                phone=otp_data.phone,
+                email=final_email,
+                role="member"
+            )
+            
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+            
+            # Mark OTP as verified only after successful user creation
+            otp_record.is_verified = True
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            error_msg = str(e)
+            # Provide user-friendly error messages
+            if "unique constraint" in error_msg.lower() or "already exists" in error_msg.lower():
+                if "username" in error_msg.lower():
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Username already taken. Please choose a different username."
+                    )
+                elif "email" in error_msg.lower():
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Email already registered. Please use login instead."
+                    )
+                elif "phone" in error_msg.lower():
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Phone number already registered. Please use login instead."
+                    )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Registration failed: {error_msg}"
+            )
+    else:
+        # User exists - just login
+        # Mark OTP as verified
+        otp_record.is_verified = True
         db.commit()
-        db.refresh(user)
     
     # Create tokens
-    access_token = create_access_token(data={"sub": user.id, "username": user.username, "role": user.role})
-    refresh_token = create_refresh_token(data={"sub": user.id})
+    access_token = create_access_token(data={"sub": str(user.id), "username": user.username, "role": user.role})
+    refresh_token = create_refresh_token(data={"sub": str(user.id)})
     
     return {
         "access_token": access_token,
