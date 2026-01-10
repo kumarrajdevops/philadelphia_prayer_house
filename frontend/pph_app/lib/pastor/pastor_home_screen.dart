@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../auth/login_screen.dart';
 import '../auth/auth_service.dart';
+import '../services/prayer_service.dart';
+import 'create_prayer_screen.dart';
 
 class PastorHomeScreen extends StatefulWidget {
   final Function(int)? onNavigateToTab;
@@ -15,6 +17,9 @@ class PastorHomeScreen extends StatefulWidget {
 class _PastorHomeScreenState extends State<PastorHomeScreen> {
   String? pastorName;
   bool loading = true;
+  bool loadingPrayers = false;
+  List<Map<String, dynamic>> todayPrayers = [];
+  int totalTodayPrayers = 0; // Total count before limiting to 5
 
   // Mock stats - replace with API calls later
   int totalMembers = 125;
@@ -55,7 +60,10 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> {
   void initState() {
     super.initState();
     _loadPastorInfo();
+    _loadTodayPrayers();
   }
+
+  // This will be called manually when needed (e.g., after creating a prayer)
 
   Future<void> _loadPastorInfo() async {
     final prefs = await SharedPreferences.getInstance();
@@ -63,6 +71,68 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> {
       pastorName = prefs.getString("name") ?? prefs.getString("username") ?? "Pastor";
       loading = false;
     });
+  }
+
+  Future<void> _loadTodayPrayers() async {
+    if (loadingPrayers) return; // Prevent multiple simultaneous requests
+    
+    setState(() {
+      loadingPrayers = true;
+    });
+
+    try {
+      final allPrayers = await PrayerService.getAllPrayers();
+      print("Loaded ${allPrayers.length} prayers from API");
+      
+      // Filter prayers for today
+      final today = DateTime.now();
+      final todayStr = "${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}";
+      print("Filtering for today's date: $todayStr");
+      
+      final todayPrayersList = allPrayers.where((prayer) {
+        final prayerDate = prayer['prayer_date'] as String?;
+        print("Prayer date from API: $prayerDate, title: ${prayer['title']}");
+        // Handle both "YYYY-MM-DD" and potential variations
+        return prayerDate != null && prayerDate.startsWith(todayStr);
+      }).toList();
+
+      print("Found ${todayPrayersList.length} prayers for today");
+
+      // Sort by start_time (ascending - earliest first)
+      todayPrayersList.sort((a, b) {
+        final aTime = a['start_time'] as String? ?? '';
+        final bTime = b['start_time'] as String? ?? '';
+        return aTime.compareTo(bTime);
+      });
+
+      // Get only the 5 latest/upcoming prayers (first 5 after sorting by time)
+      final limitedPrayers = todayPrayersList.take(5).toList();
+
+      if (mounted) {
+        setState(() {
+          todayPrayers = limitedPrayers;
+          totalTodayPrayers = todayPrayersList.length; // Store total count
+          loadingPrayers = false;
+        });
+      }
+    } catch (e) {
+      print("Error loading today's prayers: $e");
+      if (mounted) {
+        setState(() {
+          loadingPrayers = false;
+          todayPrayers = []; // Clear on error
+          totalTodayPrayers = 0; // Reset count on error
+        });
+        // Show error to user
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Failed to load prayers: ${e.toString()}"),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    }
   }
 
   String _getGreeting() {
@@ -144,6 +214,11 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> {
 
                   // Primary CTA - Create Prayer (moved up for visibility and reachability)
                   _buildCreatePrayerCTA(),
+
+                  const SizedBox(height: 24),
+
+                  // Upcoming Events
+                  _buildUpcomingEvents(),
 
                   const SizedBox(height: 24),
 
@@ -381,34 +456,35 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> {
   }
 
   Widget _buildTodaySchedule() {
-    // TODO: Replace with actual schedule data from API
-    final todayEvents = <Map<String, dynamic>>[
-      {
-        'icon': Icons.favorite,
-        'title': "Morning Prayer",
-        'time': "7:00 AM",
-        'location': "Main Hall",
-      },
-      {
-        'icon': Icons.event,
-        'title': "Youth Fellowship",
-        'time': "6:00 PM",
-        'location': "Youth Hall",
-      },
-    ];
-
-    final hasEvents = todayEvents.isNotEmpty;
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          "Today's Schedule",
-          style: TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-            color: Colors.black87,
-          ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              "Today's Schedule",
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
+            if (loadingPrayers)
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            else
+              IconButton(
+                icon: const Icon(Icons.refresh, size: 20),
+                onPressed: _loadTodayPrayers,
+                tooltip: "Refresh",
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+              ),
+          ],
         ),
         const SizedBox(height: 12),
         Container(
@@ -418,21 +494,146 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> {
             borderRadius: BorderRadius.circular(12),
             border: Border.all(color: Colors.grey[200]!),
           ),
-          child: hasEvents
-              ? Column(
-                  children: [
-                    for (int i = 0; i < todayEvents.length; i++) ...[
-                      if (i > 0) const Divider(height: 24),
-                      _buildScheduleItem(
-                        icon: todayEvents[i]['icon'] as IconData,
-                        title: todayEvents[i]['title'] as String,
-                        time: todayEvents[i]['time'] as String,
-                        location: todayEvents[i]['location'] as String,
-                      ),
-                    ],
-                  ],
+          child: loadingPrayers
+              ? const Padding(
+                  padding: EdgeInsets.all(24.0),
+                  child: Center(child: CircularProgressIndicator()),
                 )
-              : _buildEmptyScheduleState(),
+              : todayPrayers.isEmpty
+                  ? _buildEmptyScheduleState()
+                  : Column(
+                      children: [
+                        for (int i = 0; i < todayPrayers.length; i++) ...[
+                          if (i > 0) const Divider(height: 24),
+                          _buildPrayerScheduleItem(todayPrayers[i]),
+                        ],
+                        // Show "View All" if there are more than 5 prayers
+                        if (totalTodayPrayers > 5)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 16),
+                            child: TextButton.icon(
+                              onPressed: () {
+                                widget.onNavigateToTab?.call(1); // Navigate to Events tab to see all
+                              },
+                              icon: const Icon(Icons.arrow_forward, size: 18),
+                              label: Text("View All (${totalTodayPrayers} total)"),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.blue[700],
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPrayerScheduleItem(Map<String, dynamic> prayer) {
+    // Parse time from "HH:MM:SS" format
+    String formatTime(String? timeStr) {
+      if (timeStr == null || timeStr.isEmpty) return "TBD";
+      try {
+        final parts = timeStr.split(':');
+        if (parts.length >= 2) {
+          final hour = int.parse(parts[0]);
+          final minute = int.parse(parts[1]);
+          final time = TimeOfDay(hour: hour, minute: minute);
+          return time.format(context);
+        }
+      } catch (e) {
+        print("Error parsing time: $e");
+      }
+      return timeStr;
+    }
+
+    final title = prayer['title'] as String? ?? 'Prayer';
+    final startTime = prayer['start_time'] as String?;
+    final endTime = prayer['end_time'] as String?;
+    
+    String timeDisplay = "TBD";
+    if (startTime != null && endTime != null) {
+      timeDisplay = "${formatTime(startTime)} - ${formatTime(endTime)}";
+    } else if (startTime != null) {
+      timeDisplay = formatTime(startTime);
+    }
+
+    return _buildScheduleItem(
+      icon: Icons.favorite,
+      title: title,
+      time: timeDisplay,
+      location: "Main Prayer Hall", // Default location for prayers
+    );
+  }
+
+  Widget _buildUpcomingEvents() {
+    // TODO: Replace with real events data when Events backend is implemented
+    // For now, show placeholder/empty state
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              "Upcoming Events",
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
+            TextButton(
+              onPressed: () {
+                widget.onNavigateToTab?.call(1); // Navigate to Events tab
+              },
+              child: const Text("View All"),
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.blue[700],
+                padding: EdgeInsets.zero,
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.grey[200]!),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 24.0),
+            child: Column(
+              children: [
+                Icon(
+                  Icons.event_outlined,
+                  size: 48,
+                  color: Colors.grey[400],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  "No upcoming events",
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: Colors.grey[600],
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  "Events will appear here when created",
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey[500],
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ],
     );
@@ -450,7 +651,7 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> {
           ),
           const SizedBox(height: 12),
           Text(
-            "No events scheduled today",
+            "No prayers scheduled today",
             style: TextStyle(
               fontSize: 16,
               color: Colors.grey[600],
@@ -468,10 +669,23 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> {
           const SizedBox(height: 16),
           OutlinedButton.icon(
             onPressed: () {
-              widget.onNavigateToTab?.call(1); // Navigate to Events tab
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => CreatePrayerScreen(
+                  onPrayerCreated: () {
+                    // Refresh prayers after creating
+                    _loadTodayPrayers();
+                    // Navigate to Events tab
+                    widget.onNavigateToTab?.call(1);
+                  },
+                )),
+              ).then((_) {
+                // Refresh prayers when returning from Create Prayer screen
+                _loadTodayPrayers();
+              });
             },
             icon: const Icon(Icons.add, size: 18),
-            label: const Text("Create Event"),
+            label: const Text("Create Prayer"),
             style: OutlinedButton.styleFrom(
               foregroundColor: Colors.blue[700],
               side: BorderSide(color: Colors.blue[700]!),
@@ -543,13 +757,22 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> {
     return SizedBox(
       width: double.infinity,
       child: ElevatedButton.icon(
-        onPressed: () {
-          // TODO: Navigate to Create Prayer screen
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text("Create Prayer - Navigate to create screen"),
+        onPressed: () async {
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => CreatePrayerScreen(
+                onPrayerCreated: () {
+                  // Refresh prayers after creating
+                  _loadTodayPrayers();
+                  // Navigate to Events tab when prayer is created and "View Schedule" is clicked
+                  widget.onNavigateToTab?.call(1);
+                },
+              ),
             ),
           );
+          // Refresh prayers when returning from Create Prayer screen
+          _loadTodayPrayers();
         },
         icon: const Icon(Icons.add_circle_outline, size: 24),
         label: const Text(
