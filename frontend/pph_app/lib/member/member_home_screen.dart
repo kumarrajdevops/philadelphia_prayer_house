@@ -2,45 +2,60 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../auth/login_screen.dart';
 import '../auth/auth_service.dart';
-import '../utils/api_client.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
 
-class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+class MemberHomeScreen extends StatefulWidget {
+  const MemberHomeScreen({super.key});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  State<MemberHomeScreen> createState() => _MemberHomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
-  String? userName; // Use name for display
-  String? role;
+class _MemberHomeScreenState extends State<MemberHomeScreen> {
+  String? memberName;
   bool loading = true;
 
   @override
   void initState() {
     super.initState();
-    loadUserInfo();
+    _loadMemberInfo();
   }
 
-  Future<void> loadUserInfo() async {
+  Future<void> _loadMemberInfo() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      userName = prefs.getString("name") ?? prefs.getString("username") ?? "User";
-      role = prefs.getString("role");
+      memberName = prefs.getString("name") ?? prefs.getString("username") ?? "Member";
       loading = false;
     });
   }
 
-  Future<void> logout() async {
-    await AuthService.logout();
-    if (!mounted) return;
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (_) => const LoginScreen()),
-      (_) => false,
+  Future<void> _logout() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Logout"),
+        content: const Text("Are you sure you want to logout?"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("Cancel"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text("Logout", style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
     );
+
+    if (confirmed == true && mounted) {
+      await AuthService.logout();
+      if (!mounted) return;
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+        (_) => false,
+      );
+    }
   }
 
   @override
@@ -51,8 +66,6 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
-    final isPastor = role == "pastor" || role == "admin";
-
     return Scaffold(
       appBar: AppBar(
         title: const Text("Philadelphia Prayer House"),
@@ -62,7 +75,7 @@ class _HomeScreenState extends State<HomeScreen> {
           IconButton(
             icon: const Icon(Icons.logout),
             tooltip: "Logout",
-            onPressed: logout,
+            onPressed: _logout,
           ),
         ],
       ),
@@ -87,7 +100,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            "Welcome, ${userName ?? 'User'}!",
+                            "Welcome, ${memberName ?? 'Member'}!",
                             style: const TextStyle(
                               fontSize: 20,
                               fontWeight: FontWeight.bold,
@@ -95,7 +108,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            "Role: ${role ?? 'member'}",
+                            "Member",
                             style: TextStyle(
                               fontSize: 14,
                               color: Colors.grey[600],
@@ -109,32 +122,6 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
             const SizedBox(height: 24),
-            if (isPastor) ...[
-              const Text(
-                "Pastor Actions",
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Card(
-                child: ListTile(
-                  leading: const Icon(Icons.add_circle, color: Colors.blue),
-                  title: const Text("Create Prayer"),
-                  subtitle: const Text("Schedule a new prayer session"),
-                  onTap: () {
-                    // TODO: Navigate to create prayer screen
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text("Create Prayer - Coming soon"),
-                      ),
-                    );
-                  },
-                ),
-              ),
-              const SizedBox(height: 24),
-            ],
             const Text(
               "Quick Actions",
               style: TextStyle(
@@ -151,7 +138,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     title: const Text("Prayer Schedule"),
                     subtitle: const Text("View upcoming prayers"),
                     onTap: () {
-                      // TODO: Navigate to prayer schedule
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                           content: Text("Prayer Schedule - Coming soon"),
@@ -165,7 +151,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     title: const Text("Live Prayer"),
                     subtitle: const Text("Join live prayer session"),
                     onTap: () {
-                      // TODO: Navigate to live prayer
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                           content: Text("Live Prayer - Coming soon"),
@@ -179,7 +164,6 @@ class _HomeScreenState extends State<HomeScreen> {
                     title: const Text("Bible"),
                     subtitle: const Text("Read Bible verses"),
                     onTap: () {
-                      // TODO: Navigate to Bible
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                           content: Text("Bible - Coming soon"),

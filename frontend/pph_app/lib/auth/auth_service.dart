@@ -4,24 +4,37 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/api_client.dart';
 
 class AuthService {
-  static Future<bool> login(String username, String password) async {
-    final res = await http.post(
-      ApiClient.uri("/auth/login"),
-      headers: {"Content-Type": "application/x-www-form-urlencoded"},
-      body: "username=$username&password=$password",
-    );
+  static Future<Map<String, dynamic>?> login(String username, String password) async {
+    try {
+      final res = await http.post(
+        ApiClient.uri("/auth/login"),
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: "username=$username&password=$password",
+      );
 
-    if (res.statusCode == 200) {
-      final data = jsonDecode(res.body);
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString("access_token", data["access_token"]);
-      await prefs.setString("refresh_token", data["refresh_token"]);
-      await prefs.setString("user_id", data["user_id"].toString());
-      await prefs.setString("username", data["username"]);
-      await prefs.setString("role", data["role"]);
-      return true;
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString("access_token", data["access_token"]);
+        await prefs.setString("refresh_token", data["refresh_token"]);
+        await prefs.setString("user_id", data["user_id"].toString());
+        await prefs.setString("username", data["username"] ?? "");
+        await prefs.setString("name", data["name"] ?? data["username"] ?? ""); // Use name, fallback to username
+        await prefs.setString("role", data["role"] ?? "member"); // Default to member if role not present
+        
+        // Return user data for immediate navigation
+        return {
+          "role": data["role"] ?? "member",
+          "name": data["name"] ?? data["username"] ?? "",
+        };
+      } else {
+        print("Login failed: ${res.statusCode} - ${res.body}");
+        return null;
+      }
+    } catch (e) {
+      print("Login error: $e");
+      rethrow;
     }
-    return false;
   }
 
   static Future<bool> requestOtp(String value) async {
@@ -37,7 +50,7 @@ class AuthService {
     return res.statusCode == 200;
   }
 
-  static Future<bool> verifyOtp(
+  static Future<Map<String, dynamic>?> verifyOtp(
     String value,
     String otpCode,
     String? name,
@@ -78,15 +91,23 @@ class AuthService {
       await prefs.setString("access_token", data["access_token"]);
       await prefs.setString("refresh_token", data["refresh_token"]);
       await prefs.setString("user_id", data["user_id"].toString());
-      await prefs.setString("username", data["username"]);
-      await prefs.setString("role", data["role"]);
-      return true;
+      await prefs.setString("username", data["username"] ?? "");
+      await prefs.setString("name", data["name"] ?? data["username"] ?? ""); // Use name, fallback to username
+      await prefs.setString("role", data["role"] ?? "member");
+      
+      // Return user data for immediate navigation
+      return {
+        "role": data["role"] ?? "member",
+        "name": data["name"] ?? data["username"] ?? "",
+      };
     } else {
-      // Try to parse error message from backend
+      // Return null on error - let the UI handle the error message
+      print("OTP verification failed: ${res.statusCode} - ${res.body}");
       try {
         final errorData = jsonDecode(res.body);
         throw Exception(errorData["detail"] ?? "Verification failed");
       } catch (e) {
+        // Re-throw to be caught by the UI
         rethrow;
       }
     }
@@ -98,6 +119,7 @@ class AuthService {
     await prefs.remove("refresh_token");
     await prefs.remove("user_id");
     await prefs.remove("username");
+    await prefs.remove("name");
     await prefs.remove("role");
   }
 
@@ -114,6 +136,11 @@ class AuthService {
   static Future<String?> getUsername() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString("username");
+  }
+
+  static Future<String?> getName() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString("name");
   }
 }
 

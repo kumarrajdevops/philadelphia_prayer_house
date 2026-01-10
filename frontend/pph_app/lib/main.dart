@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'auth/login_screen.dart';
 import 'auth/auth_service.dart';
-import 'home/home_screen.dart';
+import 'utils/navigation_helper.dart';
 
 void main() {
   runApp(const PPHApp());
@@ -44,14 +43,14 @@ class _AuthCheckScreenState extends State<AuthCheckScreen> {
   Future<void> checkAuth() async {
     final isLoggedIn = await AuthService.isLoggedIn();
     if (!mounted) return;
-    setState(() => checking = false);
     
+    setState(() => checking = false);
+
     if (isLoggedIn) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
-      );
+      // Navigate to appropriate home based on role
+      await NavigationHelper.navigateToHome(context);
     } else {
+      if (!mounted) return;
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (_) => const LoginScreen()),

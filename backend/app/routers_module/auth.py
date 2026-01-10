@@ -43,6 +43,7 @@ class Token(BaseModel):
     token_type: str = "bearer"
     user_id: int
     username: str
+    name: str  # User's display name for UI
     role: str
 
 
@@ -225,6 +226,7 @@ def login(
         "token_type": "bearer",
         "user_id": user.id,
         "username": user.username,
+        "name": user.name,
         "role": user.role
     }
 
@@ -392,6 +394,7 @@ def verify_otp_login(otp_data: OTPVerify, db: Session = Depends(get_db)):
         "token_type": "bearer",
         "user_id": user.id,
         "username": user.username,
+        "name": user.name,
         "role": user.role
     }
 
@@ -444,6 +447,7 @@ def refresh_token(token_data: TokenRefresh, db: Session = Depends(get_db)):
         "token_type": "bearer",
         "user_id": user.id,
         "username": user.username,
+        "name": user.name,
         "role": user.role
     }
 

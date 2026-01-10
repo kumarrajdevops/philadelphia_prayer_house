@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'auth_service.dart';
-import '../home/home_screen.dart';
+import '../pastor/pastor_shell.dart';
+import '../member/member_home_screen.dart';
 
 class OtpVerifyScreen extends StatefulWidget {
   final String value;
@@ -33,7 +34,7 @@ class _OtpVerifyScreenState extends State<OtpVerifyScreen> {
     });
 
     try {
-      final ok = await AuthService.verifyOtp(
+      final result = await AuthService.verifyOtp(
         widget.value,
         otpCtrl.text.trim(),
         isNewUser ? nameCtrl.text.trim() : null,
@@ -46,13 +47,27 @@ class _OtpVerifyScreenState extends State<OtpVerifyScreen> {
 
       setState(() => loading = false);
 
-      if (ok) {
-        Navigator.pushAndRemoveUntil(
-          context,
-          MaterialPageRoute(builder: (_) => const HomeScreen()),
-          (_) => false,
-        );
-      } else {
+      if (result != null && mounted) {
+        // Navigate based on role - use role from response
+        final role = result["role"] as String? ?? "member";
+        final isPastor = role == "pastor" || role == "admin";
+        
+        print("OTP verification successful - Role: $role, IsPastor: $isPastor");
+        
+        if (isPastor) {
+          Navigator.pushAndRemoveUntil(
+            context,
+            MaterialPageRoute(builder: (_) => const PastorShell()),
+            (_) => false,
+          );
+        } else {
+          Navigator.pushAndRemoveUntil(
+            context,
+            MaterialPageRoute(builder: (_) => const MemberHomeScreen()),
+            (_) => false,
+          );
+        }
+      } else if (mounted) {
         setState(() {
           error = isNewUser
               ? "Registration failed. Please check your details."

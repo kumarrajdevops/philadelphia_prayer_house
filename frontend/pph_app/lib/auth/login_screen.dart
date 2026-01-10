@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'auth_service.dart';
-import '../home/home_screen.dart';
+import '../pastor/pastor_shell.dart';
+import '../member/member_home_screen.dart';
 import 'otp_request_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -29,7 +30,7 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      final success = await AuthService.login(
+      final result = await AuthService.login(
         usernameCtrl.text.trim(),
         passwordCtrl.text,
       );
@@ -38,12 +39,27 @@ class _LoginScreenState extends State<LoginScreen> {
 
       setState(() => loading = false);
 
-      if (success) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const HomeScreen()),
-        );
-      } else {
+      if (result != null && mounted) {
+        // Navigate based on role - use role from response
+        final role = result["role"] as String? ?? "member";
+        final isPastor = role == "pastor" || role == "admin";
+        
+        print("Login successful - Role: $role, IsPastor: $isPastor");
+        
+        if (isPastor) {
+          Navigator.pushAndRemoveUntil(
+            context,
+            MaterialPageRoute(builder: (_) => const PastorShell()),
+            (_) => false,
+          );
+        } else {
+          Navigator.pushAndRemoveUntil(
+            context,
+            MaterialPageRoute(builder: (_) => const MemberHomeScreen()),
+            (_) => false,
+          );
+        }
+      } else if (mounted) {
         setState(() => error = "Invalid username/email or password");
       }
     } catch (e) {
@@ -52,6 +68,7 @@ class _LoginScreenState extends State<LoginScreen> {
         loading = false;
         error = "Connection error. Please try again.";
       });
+      print("Login exception: $e");
     }
   }
 
