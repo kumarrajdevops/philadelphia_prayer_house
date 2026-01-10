@@ -12,8 +12,9 @@ A pastor-friendly, blue-themed Android app for the Philadelphia Prayer House com
 6. [Development Setup](#-development-setup)
 7. [Testing](#-testing)
 8. [Project Status](#-project-status)
-9. [Tech Stack](#-tech-stack)
-10. [Next Steps](#-next-steps)
+9. [Pastor Panel (Admin Dashboard)](#-pastor-panel-admin-dashboard---feature-checklist)
+10. [Tech Stack](#-tech-stack)
+11. [Next Steps](#-next-steps)
 
 ---
 
@@ -426,8 +427,133 @@ curl -X POST http://localhost:8000/auth/otp/request \
 - [ ] Songs & Worship
 - [ ] Testimonies
 - [ ] Church location (Google Maps)
-- [ ] Admin panel
+- [ ] Admin panel (see Pastor Panel checklist below)
 - [ ] Language toggle (EN/తెలుగు)
+
+---
+
+## 👨‍💼 Pastor Panel (Admin Dashboard) - Feature Checklist
+
+The Pastor Panel is the control center where pastors manage prayer hall activities, members, and spiritual content.
+
+### 🔐 1. Login & Security
+
+- [ ] Secure login (Password / OTP)
+- [ ] Role-based access (Pastor, Assistant Pastor)
+- [ ] Auto logout on inactivity
+- [ ] Session management
+- [ ] Two-factor authentication (optional)
+
+### 👥 2. Members Management
+
+- [ ] View all members list
+- [ ] Search by name / phone / prayer group
+- [ ] Filter by role, status, prayer group
+- [ ] Approve or block new registrations
+- [ ] Assign members to prayer groups
+- [ ] Member profile view (attendance, prayer requests)
+- [ ] Edit member details
+- [ ] Member activity history
+- [ ] Export members list (CSV/PDF)
+
+### 🙏 3. Prayer Requests
+
+- [ ] View incoming prayer requests
+- [ ] Filter by status (New, Prayed, Ongoing, Testimony)
+- [ ] Categorize (Health, Family, Financial, Spiritual, Others)
+- [ ] Mark as Prayed, Ongoing, or Testimony
+- [ ] Private / Public prayer requests option
+- [ ] Priority levels (High, Medium, Low)
+- [ ] Comments/Notes on prayer requests
+- [ ] Prayer request analytics
+
+### 📖 4. Sermons & Messages
+
+- [ ] Upload sermons (Text / Audio / Video)
+- [ ] Bible verse of the day
+- [ ] Weekly message posting
+- [ ] Schedule sermon releases
+- [ ] Push notification to members
+- [ ] Sermon categories/tags
+- [ ] Sermon analytics (views, listens, downloads)
+- [ ] Draft/Save for later functionality
+
+### 📅 5. Events & Meetings
+
+- [ ] Create church events (Prayer meetings, Fasting, Youth meet)
+- [ ] Date, time, location, banner image
+- [ ] Event description and details
+- [ ] RSVP functionality
+- [ ] Attendance tracking
+- [ ] Event reminders via notifications
+- [ ] Recurring events support
+- [ ] Event categories
+- [ ] Export attendance reports
+
+### 📢 6. Announcements
+
+- [ ] Create important notices
+- [ ] Emergency prayer alerts
+- [ ] Church updates
+- [ ] Scheduled announcements
+- [ ] Target audience selection (All / Groups / Specific members)
+- [ ] Rich text editor for announcements
+- [ ] Image/video attachments
+- [ ] Announcement priority levels
+
+### 💬 7. Communication
+
+- [ ] Broadcast message to all members
+- [ ] Group-wise messaging
+- [ ] One-to-one chat (optional)
+- [ ] Testimony sharing approval
+- [ ] Message templates
+- [ ] Notification preferences
+- [ ] Read receipts
+- [ ] Message history/archive
+
+### 📊 8. Reports & Analytics
+
+- [ ] Daily / weekly active members
+- [ ] Prayer request count and trends
+- [ ] Sermon views & listens analytics
+- [ ] Event participation reports
+- [ ] Member engagement metrics
+- [ ] Attendance patterns
+- [ ] Donation reports (if applicable)
+- [ ] Export reports (PDF/Excel)
+
+### ⚙️ 9. Settings
+
+- [ ] Church profile (Name, Address, Logo)
+- [ ] Service timings management
+- [ ] Social media links
+- [ ] Language settings (English / Telugu / Hindi)
+- [ ] Notification controls
+- [ ] Email/SMS service configuration
+- [ ] Backup & restore settings
+- [ ] Theme customization (colors, fonts)
+
+### 📱 Pastor Panel Platforms
+
+- [ ] Web Admin Dashboard (Laptop/Desktop)
+- [ ] Mobile App (Flutter Pastor App)
+- [ ] Tablet friendly UI
+- [ ] Responsive design for all screen sizes
+- [ ] Offline mode support (sync when online)
+
+### 🎯 Optional Advanced Features
+
+- [ ] Online offerings & donations
+- [ ] Live prayer streaming integration
+- [ ] Bible reading plans management
+- [ ] Assistant pastor role assignment
+- [ ] Audit logs (who did what, when)
+- [ ] Data export/backup functionality
+- [ ] Multi-church support (for organizations)
+- [ ] Integration with accounting software
+- [ ] Video conferencing for online prayers
+- [ ] Custom prayer group creation
 
 ---
 
@@ -457,28 +583,43 @@ curl -X POST http://localhost:8000/auth/otp/request \
 ## 🚀 Next Steps
 
 ### Immediate (Priority 1)
-1. **User Settings & Profile Management**
+1. **Pastor Panel Foundation**
+   - Basic admin dashboard UI (Web)
+   - Role-based access control (Pastor/Assistant Pastor)
+   - Secure admin login (Password/OTP)
+   - Members management (view, search, filter)
+
+2. **User Settings & Profile Management**
    - Password change for users with passwords
    - Set password for OTP-only users
    - Email update/verification
    - Profile edit (name, username)
 
-2. **Prayer Requests Feature**
+3. **Prayer Requests Feature**
    - Create prayer_requests table
-   - Add API endpoints (create, list, update, delete)
+   - Add API endpoints (create, list, update, delete, categorize)
    - Privacy settings (private/public)
-   - Flutter UI for prayer requests
+   - Flutter UI for prayer requests (member view)
+   - Pastor panel for prayer request management
 
 ### Short Term (Priority 2)
-3. **Prayer Requests**
-   - Create prayer_requests table
-   - Add API endpoints
-   - Privacy settings (private/public)
-
-4. **Events Management**
+4. **Events & Announcements Management**
    - Create events table
    - Add CRUD endpoints
    - Upcoming/past events
+   - Announcements system
+   - Push notifications for events/announcements
+
+5. **Sermons & Messages**
+   - Sermon upload (text, audio, video)
+   - Bible verse of the day
+   - Weekly message posting
+   - Push notifications
+
+6. **Communication System**
+   - Broadcast messaging
+   - Group messaging
+   - Testimony approval workflow
 
 ### Medium Term (Priority 3)
 5. **Donations Integration**
