@@ -8,6 +8,7 @@ A pastor-friendly, blue-themed Android app for the Philadelphia Prayer House com
 2. [Project Structure](#-project-structure)
 3. [Authentication System](#-authentication-system)
 4. [API Documentation](#-api-documentation)
+   - [Product Architecture: Prayers vs Events](#product-comparison)
 5. [Database Schema](#-database-schema)
 6. [Development Setup](#-development-setup)
 7. [Testing](#-testing)
@@ -213,18 +214,52 @@ Authorization: Bearer <access_token>
 | `/users` | GET | List users | No |
 | `/users` | POST | Create user | No |
 
-### Prayer Endpoints
+### Prayer Endpoints (🛐 Spiritual Gatherings)
 
 | Endpoint | Method | Description | Auth Required |
 |----------|--------|-------------|---------------|
-| `/prayers` | GET | List prayers | No |
-| `/prayers` | POST | Create prayer (Pastor/Admin only) | Yes |
+| `/prayers` | GET | List all prayers (optional: `?date=YYYY-MM-DD`, `?from_date=`, `?to_date=`) | No |
+| `/prayers` | POST | Create prayer (Pastor/Admin only). Body: `{ title, prayer_date, start_time, end_time }` | Yes |
+
+**Note:** Prayers are simple, frequent spiritual activities. Minimal metadata by design.
+
+### Event Endpoints (📅 Organizational Activities) - ⚠️ NOT YET IMPLEMENTED
+
+| Endpoint | Method | Description | Auth Required |
+|----------|--------|-------------|---------------|
+| `/events` | GET | List all events (optional: `?date=`, `?type=`, `?upcoming=true`) | No |
+| `/events` | POST | Create event (Pastor/Admin only). Body: `{ title, event_date, start_time, end_time, location, description, event_type, ... }` | Yes |
+| `/events/:id` | GET | Get event details | No |
+| `/events/:id` | PUT | Update event (Pastor/Admin only) | Yes |
+| `/events/:id` | DELETE | Delete event (Pastor/Admin only) | Yes |
+
+**Note:** Events are complex, infrequent organizational activities. Rich metadata (location, description, banner, RSVP).
 
 ### Health Check
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Server health status |
+
+---
+
+### Product Comparison
+
+| Aspect | Prayers | Events |
+|--------|---------|--------|
+| **Purpose** | Spiritual | Organizational / Social |
+| **Frequency** | High (daily/weekly) | Low-Medium (monthly/seasonal) |
+| **Duration** | Short (30-90 min) | Often longer (hours/day) |
+| **Recurrence** | Common | Rare |
+| **Core to faith** | ✅ Yes | ⚠️ Sometimes |
+| **Metadata** | Minimal | Rich (location, description, banner, RSVP) |
+| **Created by** | Pastor/Admin | Pastor/Admin |
+| **Members expect** | Regularly | Occasionally |
+
+**🔑 Locked Product Rule:**
+> Prayers are a type of scheduled spiritual activity.  
+> Events are broader scheduled activities.  
+> They should be related, not merged.
 
 ---
 
@@ -245,16 +280,66 @@ Authorization: Bearer <access_token>
 - updated_at (DateTime, timezone)
 ```
 
-### Prayers Table
+### Prayers Table (🛐 Spiritual Gatherings)
+
+**Purpose:** Store scheduled prayer sessions (frequent, short-duration, spiritual activities).
 
 ```sql
 - id (PK, Integer)
-- title (String, NOT NULL)
-- prayer_date (Date, NOT NULL, INDEXED)
-- start_time (Time, NOT NULL)
-- end_time (Time, NOT NULL)
+- title (String, NOT NULL)              -- e.g., "Morning Prayer", "Healing Prayer"
+- prayer_date (Date, NOT NULL, INDEXED) -- Date of the prayer session
+- start_time (Time, NOT NULL)           -- Start time
+- end_time (Time, NOT NULL)             -- End time
 - created_by (Integer, FK → users.id, NOT NULL, INDEXED)
 ```
+
+**Characteristics:**
+- ✅ Minimal metadata by design (Prayers are simple, frequent activities)
+- ✅ No location field (defaults to main prayer hall)
+- ✅ No description field (keeps it focused)
+- ✅ Recurring prayers are created individually (v1)
+
+**Indexes:**
+- `ix_prayers_date_creator` - Composite index on `prayer_date` + `created_by`
+- `ix_prayers_date` - Index on `prayer_date` for quick date filtering
+
+**Relationships:**
+- `creator` (User) - Many-to-one relationship
+
+### Events Table (📅 Organizational Activities) - ⚠️ NOT YET IMPLEMENTED
+
+**Purpose:** Store scheduled church events (infrequent, longer-duration, organizational activities).
+
+```sql
+- id (PK, Integer)
+- title (String, NOT NULL)                    -- e.g., "Christmas Celebration", "Youth Meeting"
+- event_date (Date, NOT NULL, INDEXED)        -- Date of the event
+- start_time (Time, NOT NULL)                 -- Start time
+- end_time (Time, NOT NULL)                   -- End time
+- location (String, NULLABLE)                 -- Venue/location (important for events)
+- description (Text, NULLABLE)                -- Event details (rich metadata)
+- banner_image_url (String, NULLABLE)         -- Banner/cover image URL (future)
+- event_type (String)                         -- Category: "celebration", "meeting", "seminar", etc.
+- is_rsvp_enabled (Boolean, default: false)   -- Whether RSVP is required (future)
+- max_attendees (Integer, NULLABLE)           -- Maximum attendees (future)
+- created_by (Integer, FK → users.id, NOT NULL, INDEXED)
+- created_at (DateTime, timezone)
+- updated_at (DateTime, timezone)
+```
+
+**Characteristics:**
+- ✅ Rich metadata (Events are complex, infrequent activities)
+- ✅ Location is important (can vary by event)
+- ✅ Description helps members understand event purpose
+- ✅ RSVP functionality planned for v1.5
+
+**Indexes:**
+- `ix_events_date` - Index on `event_date` for quick date filtering
+- `ix_events_type` - Index on `event_type` for filtering
+
+**Relationships:**
+- `creator` (User) - Many-to-one relationship
+- `rsvps` (EventRSVP) - One-to-many relationship (future)
 
 ### OTPs Table
 
@@ -415,8 +500,12 @@ curl -X POST http://localhost:8000/auth/otp/request \
 
 ### 🚧 In Progress
 
+- [x] Create Prayer screen (✅ Complete)
+- [ ] Events backend model & API (separate from Prayers)
+- [ ] Events tab UI (split view: Prayers + Events)
+- [ ] Today's Schedule (fetch real prayers + events)
+- [ ] Member Home - Prayer Schedule (read-only)
 - [ ] Prayer requests API & UI
-- [ ] Events management
 - [ ] User settings (password change, email update)
 
 ### 📋 Planned Features
