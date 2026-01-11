@@ -5,6 +5,7 @@ import '../auth/login_screen.dart';
 import '../auth/auth_service.dart';
 import '../services/prayer_service.dart';
 import 'create_prayer_screen.dart';
+import 'prayer_details_screen.dart';
 
 class PastorHomeScreen extends StatefulWidget {
   final Function(int)? onNavigateToTab;
@@ -594,6 +595,9 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
     final startTime = prayer['start_time'] as String?;
     final endTime = prayer['end_time'] as String?;
     final status = (prayer['status'] as String? ?? 'upcoming').toLowerCase();
+    final prayerType = (prayer['prayer_type'] as String? ?? 'offline').toLowerCase();
+    final location = prayer['location'] as String?;
+    final joinInfo = prayer['join_info'] as String?;
     
     String timeDisplay = "TBD";
     if (startTime != null && endTime != null) {
@@ -602,12 +606,22 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
       timeDisplay = formatTime(startTime);
     }
 
+    // Determine location display based on prayer type
+    String locationDisplay;
+    if (prayerType == 'online') {
+      locationDisplay = "Join via WhatsApp";
+    } else {
+      locationDisplay = location ?? "Location TBD";
+    }
+
     return _buildScheduleItem(
       icon: Icons.favorite,
       title: title,
       time: timeDisplay,
-      location: "Main Prayer Hall", // Default location for prayers
-      status: status, // Add status for tag display
+      location: locationDisplay,
+      status: status,
+      prayerType: prayerType,
+      prayer: prayer, // Pass prayer data for navigation
     );
   }
   
@@ -836,8 +850,30 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
     required String time,
     required String location,
     String? status,
+    String? prayerType,
+    Map<String, dynamic>? prayer, // Add prayer data for navigation
   }) {
-    return Row(
+    return InkWell(
+      onTap: prayer != null
+          ? () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => PrayerDetailsScreen(
+                    prayer: prayer,
+                    onPrayerUpdated: () {
+                      _loadTodayPrayers();
+                    },
+                    onPrayerDeleted: () {
+                      _loadTodayPrayers();
+                    },
+                  ),
+                ),
+              );
+            }
+          : null,
+      borderRadius: BorderRadius.circular(12),
+      child: Row(
       children: [
         Container(
           padding: const EdgeInsets.all(12),
@@ -863,6 +899,56 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
                       ),
                     ),
                   ),
+                  // Prayer Type Badge (for online prayers)
+                  if (prayerType == 'online')
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.green[50],
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: Colors.green[300]!, width: 1),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.chat, size: 12, color: Colors.green[700]),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Online',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.green[700],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  // Prayer Type Badge (for offline prayers)
+                  if (prayerType == 'offline')
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.orange[50],
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: Colors.orange[300]!, width: 1),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.location_on, size: 12, color: Colors.orange[700]),
+                          const SizedBox(width: 4),
+                          Text(
+                            'Offline',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.orange[700],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   if (status != null) ...[
                     const SizedBox(width: 8),
                     _buildStatusTag(status),
@@ -878,22 +964,37 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
                     time,
                     style: TextStyle(fontSize: 14, color: Colors.grey[600]),
                   ),
-                  const SizedBox(width: 16),
-                  Icon(Icons.location_on, size: 14, color: Colors.grey[600]),
-                  const SizedBox(width: 4),
-                  Expanded(
-                    child: Text(
-                      location,
-                      style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-                      overflow: TextOverflow.ellipsis,
+                  // Show location icon for offline, chat icon for online
+                  if (prayerType == 'offline') ...[
+                    const SizedBox(width: 16),
+                    Icon(Icons.location_on, size: 14, color: Colors.grey[600]),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        location,
+                        style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
-                  ),
+                  ] else if (prayerType == 'online') ...[
+                    const SizedBox(width: 16),
+                    Icon(Icons.chat, size: 14, color: Colors.green[600]),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        location, // This will be "Join via WhatsApp"
+                        style: TextStyle(fontSize: 14, color: Colors.green[600], fontWeight: FontWeight.w500),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ],
           ),
         ),
       ],
+      ),
     );
   }
 

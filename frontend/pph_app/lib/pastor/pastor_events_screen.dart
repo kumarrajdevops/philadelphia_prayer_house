@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/prayer_service.dart';
 import 'create_prayer_screen.dart';
+import 'edit_prayer_screen.dart';
+import 'prayer_details_screen.dart';
 
 class PastorEventsScreen extends StatefulWidget {
   const PastorEventsScreen({super.key});
@@ -237,6 +239,23 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
       print("Error checking if prayer started: $e");
       return false; // Safe default: assume it hasn't started
     }
+  }
+
+  Future<void> _handleEditPrayer(Map<String, dynamic> prayer) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => EditPrayerScreen(
+          prayer: prayer,
+          onPrayerUpdated: () {
+            // Refresh prayers after editing
+            _loadPrayers();
+          },
+        ),
+      ),
+    );
+    // Also refresh when returning from edit screen
+    _loadPrayers();
   }
 
   Future<void> _handleDeletePrayer(Map<String, dynamic> prayer) async {
@@ -705,7 +724,10 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
     final startTime = prayer['start_time'] as String?;
     final endTime = prayer['end_time'] as String?;
     final status = (prayer['status'] as String? ?? 'upcoming').toLowerCase();
-    final canDelete = status == 'upcoming'; // Only show delete if status is upcoming
+    final prayerType = (prayer['prayer_type'] as String? ?? 'offline').toLowerCase();
+    final location = prayer['location'] as String?;
+    final joinInfo = prayer['join_info'] as String?;
+    final canEdit = status == 'upcoming'; // Only show edit/delete if status is upcoming
 
     String timeDisplay = "TBD";
     if (startTime != null && endTime != null) {
@@ -728,9 +750,19 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
       color: isLive ? Colors.red[50]?.withAlpha((255 * 0.3).round()) : null, // Subtle background tint for live
       child: InkWell(
         onTap: () {
-          // TODO: Navigate to prayer details
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("Prayer details - Coming soon: $title")),
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => PrayerDetailsScreen(
+                prayer: prayer,
+                onPrayerUpdated: () {
+                  _loadPrayers();
+                },
+                onPrayerDeleted: () {
+                  _loadPrayers();
+                },
+              ),
+            ),
           );
         },
         borderRadius: BorderRadius.circular(12),
@@ -770,6 +802,57 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
                           ),
                         ),
                         const SizedBox(width: 8),
+                        // Prayer Type Badge (for online prayers)
+                        if (prayerType == 'online')
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.green[50],
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: Colors.green[300]!, width: 1),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.chat, size: 12, color: Colors.green[700]),
+                                const SizedBox(width: 4),
+                                Text(
+                                  'Online',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.green[700],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        // Prayer Type Badge (for offline prayers)
+                        if (prayerType == 'offline')
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Colors.orange[50],
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: Colors.orange[300]!, width: 1),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.location_on, size: 12, color: Colors.orange[700]),
+                                const SizedBox(width: 4),
+                                Text(
+                                  'Offline',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.orange[700],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        const SizedBox(width: 8),
                         _buildStatusTag(status),
                       ],
                     ),
@@ -785,6 +868,7 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
                       ],
                     ),
                     const SizedBox(height: 4),
+                    // Show time
                     Row(
                       children: [
                         Icon(Icons.access_time, size: 14, color: Colors.grey[600]),
@@ -793,34 +877,82 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
                           timeDisplay,
                           style: TextStyle(fontSize: 14, color: Colors.grey[600]),
                         ),
-                        const SizedBox(width: 16),
-                        Icon(Icons.location_on, size: 14, color: Colors.grey[600]),
-                        const SizedBox(width: 4),
-                        Expanded(
-                          child: Text(
-                            "Main Prayer Hall",
-                            style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
                       ],
                     ),
+                    // Show location for offline prayers, WhatsApp info for online prayers
+                    if (prayerType == 'offline')
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Row(
+                          children: [
+                            Icon(Icons.location_on, size: 14, color: Colors.grey[600]),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                location ?? "Location TBD",
+                                style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    else if (prayerType == 'online')
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Row(
+                          children: [
+                            Icon(Icons.chat, size: 14, color: Colors.green[600]),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                "Join via WhatsApp",
+                                style: TextStyle(fontSize: 14, color: Colors.green[600], fontWeight: FontWeight.w500),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    // Show edit and delete buttons at the bottom only if prayer hasn't started
+                    if (canEdit) ...[
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          TextButton.icon(
+                            onPressed: () {
+                              _handleEditPrayer(prayer);
+                            },
+                            icon: const Icon(Icons.edit_outlined, size: 18, color: Colors.blue),
+                            label: const Text(
+                              "Edit",
+                              style: TextStyle(color: Colors.blue),
+                            ),
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          TextButton.icon(
+                            onPressed: () {
+                              _handleDeletePrayer(prayer);
+                            },
+                            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red),
+                            label: const Text(
+                              "Delete",
+                              style: TextStyle(color: Colors.red),
+                            ),
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ],
                 ),
               ),
-              // Show delete button only if prayer hasn't started
-              if (canDelete)
-                IconButton(
-                  icon: const Icon(Icons.delete_outline, color: Colors.red),
-                  tooltip: "Delete prayer",
-                  onPressed: () {
-                    _handleDeletePrayer(prayer);
-                  },
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                ),
-              if (!canDelete)
-                const Icon(Icons.chevron_right, color: Colors.grey),
             ],
           ),
         ),

@@ -134,7 +134,22 @@ All statuses are **automatically computed** at runtime based on current time vs 
 
 ---
 
-## 🗑️ DELETE / CANCEL / ARCHIVE — FINAL RULES
+## 🗑️ DELETE / EDIT / CANCEL / ARCHIVE — FINAL RULES
+
+### Edit (v1) ✅
+
+**Rule:** Edit **ONLY** before prayer starts
+
+**State:** Before start time → ✅ Edit allowed  
+**State:** After start time → ❌ Edit NOT allowed  
+**State:** After end time → ❌ Edit NOT allowed
+
+**UX:**
+- Edit button visible only if `status == 'upcoming'`
+- Can edit: title, prayer_date, start_time, end_time
+- Backend validates and rejects if prayer has started
+- Backend validates new start_time is not in the past
+- Auto-refresh after successful edit
 
 ### Delete (v1) ✅
 
@@ -145,7 +160,7 @@ All statuses are **automatically computed** at runtime based on current time vs 
 **State:** After end time → ❌ Delete NOT allowed
 
 **UX:**
-- Delete button visible only if `current_time < start_time`
+- Delete button visible only if `status == 'upcoming'`
 - Confirmation dialog: "Delete Prayer? Members will no longer see this prayer."
 - Backend validates and rejects if prayer has started
 
@@ -205,11 +220,14 @@ All statuses are **automatically computed** at runtime based on current time vs 
 - ✅ `compute_prayer_status()` utility function (HH:MM precision)
 - ✅ Dynamic status computation on every `GET /prayers` request
 - ✅ Initial status computed on `POST /prayers` (create)
+- ✅ PUT `/prayers/{id}` endpoint (pastor-only)
+- ✅ Validation: Only allows edit if prayer hasn't started
+- ✅ Validation: New start_time must not be in the past
 - ✅ DELETE `/prayers/{id}` endpoint (pastor-only)
 - ✅ Validation: Only allows delete if `current_time < start_time`
 - ✅ Timestamp comparison up to HH:MM precision
-- ✅ One-liner logging for all delete operations
-- ✅ Friendly error messages ("This prayer has already started and can't be deleted.")
+- ✅ One-liner logging for all edit/delete operations
+- ✅ Friendly error messages
 
 ### Frontend
 

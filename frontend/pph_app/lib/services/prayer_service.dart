@@ -10,6 +10,9 @@ class PrayerService {
     required DateTime prayerDate,
     required DateTime startTime,
     required DateTime endTime,
+    required String prayerType, // "online" or "offline"
+    String? location, // Required for offline prayers
+    String? joinInfo, // Required for online prayers (WhatsApp link/instructions)
   }) async {
     try {
       final headers = await ApiClient.authHeaders();
@@ -26,6 +29,9 @@ class PrayerService {
         "prayer_date": dateStr,
         "start_time": startTimeStr,
         "end_time": endTimeStr,
+        "prayer_type": prayerType,
+        "location": location,
+        "join_info": joinInfo,
       });
 
       final res = await http.post(
@@ -64,6 +70,62 @@ class PrayerService {
     } catch (e) {
       print("Get prayers error: $e");
       return [];
+    }
+  }
+
+  /// Update a prayer by ID
+  /// Returns the updated prayer data on success, null on failure
+  static Future<Map<String, dynamic>?> updatePrayer({
+    required int prayerId,
+    required String title,
+    required DateTime prayerDate,
+    required DateTime startTime,
+    required DateTime endTime,
+    required String prayerType, // "online" or "offline"
+    String? location, // Required for offline prayers
+    String? joinInfo, // Required for online prayers (WhatsApp link/instructions)
+  }) async {
+    try {
+      final headers = await ApiClient.authHeaders();
+      
+      // Format date as YYYY-MM-DD
+      final dateStr = "${prayerDate.year}-${prayerDate.month.toString().padLeft(2, '0')}-${prayerDate.day.toString().padLeft(2, '0')}";
+      
+      // Format time as HH:MM:SS
+      final startTimeStr = "${startTime.hour.toString().padLeft(2, '0')}:${startTime.minute.toString().padLeft(2, '0')}:00";
+      final endTimeStr = "${endTime.hour.toString().padLeft(2, '0')}:${endTime.minute.toString().padLeft(2, '0')}:00";
+      
+      final body = jsonEncode({
+        "title": title,
+        "prayer_date": dateStr,
+        "start_time": startTimeStr,
+        "end_time": endTimeStr,
+        "prayer_type": prayerType,
+        "location": location,
+        "join_info": joinInfo,
+      });
+
+      final res = await http.put(
+        ApiClient.uri("/prayers/$prayerId"),
+        headers: headers,
+        body: body,
+      );
+
+      if (res.statusCode == 200) {
+        return jsonDecode(res.body) as Map<String, dynamic>;
+      } else {
+        print("Update prayer failed: ${res.statusCode} - ${res.body}");
+        try {
+          final errorData = jsonDecode(res.body);
+          throw Exception(errorData["detail"] ?? "Failed to update prayer");
+        } catch (e) {
+          if (e is Exception) rethrow;
+          throw Exception("Failed to update prayer");
+        }
+      }
+    } catch (e) {
+      print("Update prayer error: $e");
+      rethrow;
     }
   }
 

@@ -31,6 +31,10 @@ class Prayer(Base):
     start_time = Column(Time, nullable=False)
     end_time = Column(Time, nullable=False)
 
+    prayer_type = Column(String, nullable=False, default="offline", index=True)  # online, offline
+    location = Column(String, nullable=True)  # Physical location (required for offline)
+    join_info = Column(String, nullable=True)  # WhatsApp link/instructions (required for online)
+
     status = Column(String, nullable=False, default="upcoming", index=True)  # upcoming, inprogress, completed
 
     created_by = Column(

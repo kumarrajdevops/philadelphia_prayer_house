@@ -1,0 +1,632 @@
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../services/prayer_service.dart';
+import 'edit_prayer_screen.dart';
+
+class PrayerDetailsScreen extends StatefulWidget {
+  final Map<String, dynamic> prayer;
+  final VoidCallback? onPrayerUpdated;
+  final VoidCallback? onPrayerDeleted;
+
+  const PrayerDetailsScreen({
+    super.key,
+    required this.prayer,
+    this.onPrayerUpdated,
+    this.onPrayerDeleted,
+  });
+
+  @override
+  State<PrayerDetailsScreen> createState() => _PrayerDetailsScreenState();
+}
+
+class _PrayerDetailsScreenState extends State<PrayerDetailsScreen> {
+  bool _loading = false;
+
+  String _formatTime(String? timeStr) {
+    if (timeStr == null || timeStr.isEmpty) return "TBD";
+    try {
+      final parts = timeStr.split(':');
+      if (parts.length >= 2) {
+        final hour = int.parse(parts[0]);
+        final minute = int.parse(parts[1]);
+        final time = TimeOfDay(hour: hour, minute: minute);
+        return time.format(context);
+      }
+    } catch (e) {
+      print("Error parsing time: $e");
+    }
+    return timeStr;
+  }
+
+  String _formatDate(String? dateStr) {
+    if (dateStr == null || dateStr.isEmpty) return "TBD";
+    try {
+      final parts = dateStr.split('-');
+      if (parts.length >= 3) {
+        final year = int.parse(parts[0]);
+        final month = int.parse(parts[1]);
+        final day = int.parse(parts[2]);
+        final date = DateTime(year, month, day);
+        return DateFormat('EEEE, MMMM d, y').format(date);
+      }
+    } catch (e) {
+      print("Error parsing date: $e");
+    }
+    return dateStr;
+  }
+
+  Widget _buildStatusTag(String status) {
+    String displayText;
+    Color backgroundColor;
+    Color textColor;
+
+    switch (status.toLowerCase()) {
+      case 'inprogress':
+        displayText = 'LIVE NOW';
+        backgroundColor = Colors.red[50]!;
+        textColor = Colors.red[700]!;
+        break;
+      case 'completed':
+        displayText = 'COMPLETED';
+        backgroundColor = Colors.grey[200]!;
+        textColor = Colors.grey[700]!;
+        break;
+      case 'upcoming':
+      default:
+        displayText = 'UPCOMING';
+        backgroundColor = Colors.blue[50]!;
+        textColor = Colors.blue[700]!;
+        break;
+    }
+
+    if (status.toLowerCase() == 'inprogress') {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: backgroundColor,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.red[600]!, width: 2),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.red.withAlpha((255 * 0.2).round()),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              margin: const EdgeInsets.only(right: 6),
+              decoration: BoxDecoration(
+                color: Colors.red[700]!,
+                shape: BoxShape.circle,
+              ),
+            ),
+            Text(
+              displayText,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                color: textColor,
+                letterSpacing: 1.0,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: textColor.withAlpha((255 * 0.3).round()), width: 1),
+      ),
+      child: Text(
+        displayText,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: textColor,
+          letterSpacing: 0.5,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(IconData icon, String label, String value, {Color? valueColor}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 20, color: Colors.grey[600]),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[600],
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: valueColor ?? Colors.black87,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _handleEdit() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => EditPrayerScreen(
+          prayer: widget.prayer,
+          onPrayerUpdated: () {
+            widget.onPrayerUpdated?.call();
+            Navigator.pop(context); // Close details screen after edit
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openGoogleMaps(String location) async {
+    try {
+      // Encode the location for Google Maps URL
+      final encodedLocation = Uri.encodeComponent(location);
+      final googleMapsUrl = Uri.parse('https://www.google.com/maps/search/?api=1&query=$encodedLocation');
+      
+      if (await canLaunchUrl(googleMapsUrl)) {
+        await launchUrl(googleMapsUrl, mode: LaunchMode.externalApplication);
+      } else {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Could not open Google Maps"),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Error opening Google Maps: ${e.toString()}"),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _openWhatsApp(String joinInfo) async {
+    try {
+      // Extract phone number or link from joinInfo
+      // WhatsApp URL format: https://wa.me/PHONENUMBER or https://chat.whatsapp.com/INVITELINK
+      Uri whatsappUrl;
+      
+      // Check if joinInfo is a phone number (digits only) or a link
+      final cleanInfo = joinInfo.trim();
+      if (RegExp(r'^\+?[0-9]{10,}$').hasMatch(cleanInfo)) {
+        // It's a phone number
+        final phoneNumber = cleanInfo.replaceAll(RegExp(r'[^\d]'), '');
+        whatsappUrl = Uri.parse('https://wa.me/$phoneNumber');
+      } else if (cleanInfo.startsWith('http://') || cleanInfo.startsWith('https://')) {
+        // It's already a URL
+        whatsappUrl = Uri.parse(cleanInfo);
+      } else if (cleanInfo.startsWith('wa.me/') || cleanInfo.startsWith('chat.whatsapp.com/')) {
+        // It's a WhatsApp link without protocol
+        whatsappUrl = Uri.parse('https://$cleanInfo');
+      } else {
+        // Try to extract phone number from text
+        final phoneMatch = RegExp(r'\+?[0-9]{10,}').firstMatch(cleanInfo);
+        if (phoneMatch != null) {
+          final phoneNumber = phoneMatch.group(0)!.replaceAll(RegExp(r'[^\d]'), '');
+          whatsappUrl = Uri.parse('https://wa.me/$phoneNumber');
+        } else {
+          throw Exception("Invalid WhatsApp join information format");
+        }
+      }
+      
+      if (await canLaunchUrl(whatsappUrl)) {
+        await launchUrl(whatsappUrl, mode: LaunchMode.externalApplication);
+      } else {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Could not open WhatsApp"),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Error opening WhatsApp: ${e.toString()}"),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _handleDelete() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Delete Prayer"),
+        content: const Text("Are you sure you want to delete this prayer? This action cannot be undone."),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("Cancel"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text("Delete"),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() => _loading = true);
+
+    try {
+      final prayerId = widget.prayer['id'] as int?;
+      if (prayerId == null) {
+        throw Exception("Prayer ID not found");
+      }
+
+      final success = await PrayerService.deletePrayer(prayerId);
+      
+      if (!mounted) return;
+
+      setState(() => _loading = false);
+
+      if (success) {
+        widget.onPrayerDeleted?.call();
+        Navigator.pop(context); // Close details screen after delete
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Prayer deleted successfully"),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Failed to delete prayer"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      
+      String errorMessage = "Failed to delete prayer";
+      if (e.toString().contains("already started")) {
+        errorMessage = "This prayer has already started and can't be deleted.";
+      } else if (e.toString().isNotEmpty) {
+        errorMessage = e.toString().replaceFirst("Exception: ", "");
+      }
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(errorMessage),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final title = widget.prayer['title'] as String? ?? 'Prayer';
+    final prayerDate = widget.prayer['prayer_date'] as String?;
+    final startTime = widget.prayer['start_time'] as String?;
+    final endTime = widget.prayer['end_time'] as String?;
+    final status = (widget.prayer['status'] as String? ?? 'upcoming').toLowerCase();
+    final prayerType = (widget.prayer['prayer_type'] as String? ?? 'offline').toLowerCase();
+    final location = widget.prayer['location'] as String?;
+    final joinInfo = widget.prayer['join_info'] as String?;
+    final canEdit = status == 'upcoming';
+
+    String timeDisplay = "TBD";
+    if (startTime != null && endTime != null) {
+      timeDisplay = "${_formatTime(startTime)} - ${_formatTime(endTime)}";
+    } else if (startTime != null) {
+      timeDisplay = _formatTime(startTime);
+    }
+
+    final isLive = status == 'inprogress';
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("Prayer Details"),
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Hero Section with Status
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      color: isLive ? Colors.red[50] : Colors.blue[50],
+                      border: isLive
+                          ? Border(
+                              bottom: BorderSide(color: Colors.red[400]!, width: 2),
+                            )
+                          : null,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                title,
+                                style: const TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            _buildStatusTag(status),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        Row(
+                          children: [
+                            // Prayer Type Badge
+                            if (prayerType == 'online')
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: Colors.green[50],
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: Colors.green[300]!, width: 1.5),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.chat, size: 16, color: Colors.green[700]),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      'Online Prayer',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.green[700],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              )
+                            else
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: Colors.orange[50],
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: Colors.orange[300]!, width: 1.5),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.location_on, size: 16, color: Colors.orange[700]),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      'Offline Prayer',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.orange[700],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // Details Section
+                  Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Date
+                        _buildInfoRow(
+                          Icons.calendar_today,
+                          "Date",
+                          _formatDate(prayerDate),
+                        ),
+                        const Divider(),
+
+                        // Time
+                        _buildInfoRow(
+                          Icons.access_time,
+                          "Time",
+                          timeDisplay,
+                        ),
+                        const Divider(),
+
+                        // Location or Join Info
+                        if (prayerType == 'offline')
+                          _buildInfoRow(
+                            Icons.location_on,
+                            "Location",
+                            location ?? "Location TBD",
+                          )
+                        else
+                          _buildInfoRow(
+                            Icons.chat,
+                            "Join via WhatsApp",
+                            joinInfo ?? "Join information not available",
+                            valueColor: Colors.green[700],
+                          ),
+
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+      bottomNavigationBar: canEdit
+          ? Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 4,
+                    offset: const Offset(0, -2),
+                  ),
+                ],
+              ),
+              child: SafeArea(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Google Maps/WhatsApp button for upcoming prayers
+                    if ((prayerType == 'offline' && location != null && location.isNotEmpty) ||
+                        (prayerType == 'online' && joinInfo != null && joinInfo.isNotEmpty))
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: prayerType == 'offline' && location != null && location.isNotEmpty
+                            ? ElevatedButton.icon(
+                                onPressed: () => _openGoogleMaps(location),
+                                icon: const Icon(Icons.map),
+                                label: const Text("Open in Google Maps"),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.blue[700],
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(vertical: 14),
+                                  minimumSize: const Size(double.infinity, 50),
+                                ),
+                              )
+                            : ElevatedButton.icon(
+                                onPressed: () => _openWhatsApp(joinInfo!),
+                                icon: const Icon(Icons.chat),
+                                label: const Text("Join via WhatsApp"),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.green[700],
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(vertical: 14),
+                                  minimumSize: const Size(double.infinity, 50),
+                                ),
+                              ),
+                      ),
+                    // Edit and Delete buttons
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _loading ? null : _handleEdit,
+                            icon: const Icon(Icons.edit_outlined),
+                            label: const Text("Edit Prayer"),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.blue[700],
+                              side: BorderSide(color: Colors.blue[700]!),
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            onPressed: _loading ? null : _handleDelete,
+                            icon: const Icon(Icons.delete_outline),
+                            label: const Text("Delete"),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.red[700],
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            )
+          : isLive && ((prayerType == 'offline' && location != null && location.isNotEmpty) ||
+                (prayerType == 'online' && joinInfo != null && joinInfo.isNotEmpty))
+              ? Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 4,
+                        offset: const Offset(0, -2),
+                      ),
+                    ],
+                  ),
+                  child: SafeArea(
+                    child: prayerType == 'offline' && location != null && location.isNotEmpty
+                        ? ElevatedButton.icon(
+                            onPressed: () => _openGoogleMaps(location),
+                            icon: const Icon(Icons.map),
+                            label: const Text("Open in Google Maps"),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.blue[700],
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              minimumSize: const Size(double.infinity, 50),
+                            ),
+                          )
+                        : ElevatedButton.icon(
+                            onPressed: () => _openWhatsApp(joinInfo!),
+                            icon: const Icon(Icons.chat),
+                            label: const Text("Join via WhatsApp"),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green[700],
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              minimumSize: const Size(double.infinity, 50),
+                            ),
+                          ),
+                  ),
+                )
+              : null,
+    );
+  }
+}
+

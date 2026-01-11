@@ -39,6 +39,24 @@ class PrayerCreate(BaseModel):
     prayer_date: date
     start_time: time
     end_time: time
+    prayer_type: str  # "online" or "offline"
+    location: Optional[str] = None  # Required for offline prayers
+    join_info: Optional[str] = None  # Required for online prayers (WhatsApp link/instructions)
+
+
+class PrayerUpdate(BaseModel):
+    """
+    Input schema used when updating a prayer.
+    All fields are required (full update, not partial).
+    NOTE: created_by is NOT included and cannot be changed.
+    """
+    title: str
+    prayer_date: date
+    start_time: time
+    end_time: time
+    prayer_type: str  # "online" or "offline"
+    location: Optional[str] = None  # Required for offline prayers
+    join_info: Optional[str] = None  # Required for online prayers (WhatsApp link/instructions)
 
 
 class PrayerResponse(PrayerCreate):

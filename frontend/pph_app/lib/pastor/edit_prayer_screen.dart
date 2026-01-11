@@ -2,20 +2,25 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../services/prayer_service.dart';
 
-class CreatePrayerScreen extends StatefulWidget {
-  final VoidCallback? onPrayerCreated;
+class EditPrayerScreen extends StatefulWidget {
+  final Map<String, dynamic> prayer;
+  final VoidCallback? onPrayerUpdated;
   
-  const CreatePrayerScreen({super.key, this.onPrayerCreated});
+  const EditPrayerScreen({
+    super.key,
+    required this.prayer,
+    this.onPrayerUpdated,
+  });
 
   @override
-  State<CreatePrayerScreen> createState() => _CreatePrayerScreenState();
+  State<EditPrayerScreen> createState() => _EditPrayerScreenState();
 }
 
-class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
+class _EditPrayerScreenState extends State<EditPrayerScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _titleController = TextEditingController();
-  final _locationController = TextEditingController();
-  final _joinInfoController = TextEditingController();
+  late final TextEditingController _titleController;
+  final TextEditingController _locationController = TextEditingController();
+  final TextEditingController _joinInfoController = TextEditingController();
   
   DateTime? _selectedDate;
   TimeOfDay? _startTime;
@@ -25,29 +30,67 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
   
   bool _loading = false;
   bool _hasUnsavedChanges = false;
-  
+  int? _prayerId;
+
   @override
   void initState() {
     super.initState();
-    _initializeDefaults();
+    _prayerId = widget.prayer['id'] as int?;
+    _titleController = TextEditingController(text: widget.prayer['title'] as String? ?? '');
+    _initializeFromPrayer();
     _titleController.addListener(() {
       _hasUnsavedChanges = true;
     });
   }
 
-  void _initializeDefaults() {
-    final now = DateTime.now();
+  void _initializeFromPrayer() {
+    // Parse date from "YYYY-MM-DD" format
+    final prayerDateStr = widget.prayer['prayer_date'] as String?;
+    if (prayerDateStr != null) {
+      try {
+        final parts = prayerDateStr.split('-');
+        if (parts.length >= 3) {
+          final year = int.parse(parts[0]);
+          final month = int.parse(parts[1]);
+          final day = int.parse(parts[2]);
+          _selectedDate = DateTime(year, month, day);
+        }
+      } catch (e) {
+        print("Error parsing date: $e");
+      }
+    }
     
-    // Date: Default to today
-    _selectedDate = now;
+    // Parse start time from "HH:MM:SS" format
+    final startTimeStr = widget.prayer['start_time'] as String?;
+    if (startTimeStr != null) {
+      try {
+        final parts = startTimeStr.split(':');
+        if (parts.length >= 2) {
+          final hour = int.parse(parts[0]);
+          final minute = int.parse(parts[1]);
+          _startTime = TimeOfDay(hour: hour, minute: minute);
+        }
+      } catch (e) {
+        print("Error parsing start time: $e");
+      }
+    }
     
-    // Start Time: Next rounded hour
-    final nextHour = now.hour + 1;
-    _startTime = TimeOfDay(hour: nextHour > 23 ? 0 : nextHour, minute: 0);
+    // Parse end time from "HH:MM:SS" format
+    final endTimeStr = widget.prayer['end_time'] as String?;
+    if (endTimeStr != null) {
+      try {
+        final parts = endTimeStr.split(':');
+        if (parts.length >= 2) {
+          final hour = int.parse(parts[0]);
+          final minute = int.parse(parts[1]);
+          _endTime = TimeOfDay(hour: hour, minute: minute);
+        }
+      } catch (e) {
+        print("Error parsing end time: $e");
+      }
+    }
     
-    // End Time: Start time + 1 hour
-    final endHour = _startTime!.hour + 1;
-    _endTime = TimeOfDay(hour: endHour > 23 ? 0 : endHour, minute: 0);
+    _hasUnsavedChanges = false; // Reset after initializing
   }
 
   @override
@@ -77,7 +120,6 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
       setState(() {
         _selectedDate = picked;
         _hasUnsavedChanges = true;
-        // If date changed to past, ensure validation shows error
       });
       // Re-validate after date change to show inline errors
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -273,7 +315,7 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
     final shouldDiscard = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text("Discard Prayer?"),
+        title: const Text("Discard Changes?"),
         content: const Text("Your changes will be lost."),
         actions: [
           TextButton(
@@ -291,7 +333,14 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
     return shouldDiscard ?? false;
   }
 
-  Future<void> _createPrayer() async {
+  Future<void> _updatePrayer() async {
+    if (_prayerId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Invalid prayer ID")),
+      );
+      return;
+    }
+    
     if (!_formKey.currentState!.validate()) {
       return;
     }
@@ -371,7 +420,8 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
         return;
       }
 
-      final result = await PrayerService.createPrayer(
+      final result = await PrayerService.updatePrayer(
+        prayerId: _prayerId!,
         title: _titleController.text.trim(),
         prayerDate: _selectedDate!,
         startTime: startDateTime,
@@ -386,12 +436,25 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
       setState(() => _loading = false);
 
       if (result != null) {
-        // Success - show confirmation with actions
-        _showSuccessConfirmation();
+        // Success - show confirmation
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Prayer updated successfully"),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+        
+        // Call callback and pop
+        widget.onPrayerUpdated?.call();
+        if (mounted) {
+          Navigator.pop(context);
+        }
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text("Failed to create prayer. Please try again."),
+            content: Text("Failed to update prayer. Please try again."),
             backgroundColor: Colors.red,
           ),
         );
@@ -406,68 +469,6 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
         ),
       );
     }
-  }
-
-  void _showSuccessConfirmation() {
-    if (!mounted) return;
-    
-    // Show success snackbar
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: const Text("Prayer created successfully"),
-        backgroundColor: Colors.green,
-        duration: const Duration(seconds: 2),
-      ),
-    );
-
-    // Show dialog with next actions
-    if (!mounted) return;
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.check_circle, color: Colors.green, size: 28),
-            SizedBox(width: 8),
-            Expanded(child: Text("Prayer Created")),
-          ],
-        ),
-        content: const Text("Your prayer has been scheduled successfully."),
-        actions: [
-          TextButton(
-            onPressed: () {
-              if (!mounted) return;
-              Navigator.pop(dialogContext); // Close dialog
-              Navigator.pop(context); // Close create prayer screen
-              // Navigate to Events tab (index 1)
-              widget.onPrayerCreated?.call();
-            },
-            child: const Text("View Schedule"),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              if (!mounted) return;
-              Navigator.pop(dialogContext); // Close dialog
-              // Reset form for another prayer
-              setState(() {
-                _titleController.clear();
-                _locationController.clear();
-                _joinInfoController.clear();
-                _prayerType = 'offline';
-                _hasUnsavedChanges = false;
-              });
-              _initializeDefaults();
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blue[700],
-              foregroundColor: Colors.white,
-            ),
-            child: const Text("Create Another"),
-          ),
-        ],
-      ),
-    );
   }
 
   @override
@@ -486,7 +487,7 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: const Text("Create Prayer"),
+          title: const Text("Edit Prayer"),
           backgroundColor: Colors.blue[700],
           foregroundColor: Colors.white,
           leading: IconButton(
@@ -525,7 +526,7 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
                 Padding(
                   padding: const EdgeInsets.only(bottom: 24.0),
                   child: Text(
-                    "Schedule a new prayer session",
+                    "Update prayer details",
                     style: TextStyle(
                       fontSize: 14,
                       color: Colors.grey[600],
@@ -768,11 +769,11 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
 
                 const SizedBox(height: 32),
 
-                // Create Button (Primary CTA)
+                // Update Button (Primary CTA)
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
-                    onPressed: _loading ? null : _createPrayer,
+                    onPressed: _loading ? null : _updatePrayer,
                     icon: _loading
                         ? const SizedBox(
                             width: 20,
@@ -784,7 +785,7 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
                           )
                         : const Icon(Icons.check_circle, size: 24),
                     label: Text(
-                      _loading ? "Creating..." : "Create Prayer",
+                      _loading ? "Updating..." : "Update Prayer",
                       style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                     ),
                     style: ElevatedButton.styleFrom(
