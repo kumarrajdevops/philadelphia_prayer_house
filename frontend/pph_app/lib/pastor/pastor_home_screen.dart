@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../auth/login_screen.dart';
@@ -14,12 +15,15 @@ class PastorHomeScreen extends StatefulWidget {
   State<PastorHomeScreen> createState() => _PastorHomeScreenState();
 }
 
-class _PastorHomeScreenState extends State<PastorHomeScreen> {
+class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBindingObserver {
   String? pastorName;
   bool loading = true;
   bool loadingPrayers = false;
   List<Map<String, dynamic>> todayPrayers = [];
   int totalTodayPrayers = 0; // Total count before limiting to 5
+  
+  Timer? _autoRefreshTimer;
+  static const Duration _autoRefreshInterval = Duration(seconds: 45); // 45 seconds - balance between updates and battery
 
   // Mock stats - replace with API calls later
   int totalMembers = 125;
@@ -59,8 +63,38 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadPastorInfo();
     _loadTodayPrayers();
+    _startAutoRefresh();
+  }
+  
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _autoRefreshTimer?.cancel();
+    super.dispose();
+  }
+  
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // Force refresh when app comes to foreground
+    if (state == AppLifecycleState.resumed) {
+      _loadTodayPrayers();
+      _startAutoRefresh(); // Restart timer
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _autoRefreshTimer?.cancel(); // Stop timer when app goes to background
+    }
+  }
+  
+  void _startAutoRefresh() {
+    _autoRefreshTimer?.cancel();
+    _autoRefreshTimer = Timer.periodic(_autoRefreshInterval, (timer) {
+      if (mounted) {
+        _loadTodayPrayers(silent: true); // Silent refresh - no loading indicator
+      }
+    });
   }
 
   // This will be called manually when needed (e.g., after creating a prayer)
@@ -73,12 +107,14 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> {
     });
   }
 
-  Future<void> _loadTodayPrayers() async {
+  Future<void> _loadTodayPrayers({bool silent = false}) async {
     if (loadingPrayers) return; // Prevent multiple simultaneous requests
     
-    setState(() {
-      loadingPrayers = true;
-    });
+    if (!silent) {
+      setState(() {
+        loadingPrayers = true;
+      });
+    }
 
     try {
       final allPrayers = await PrayerService.getAllPrayers();
@@ -89,14 +125,17 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> {
       final todayStr = "${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}";
       print("Filtering for today's date: $todayStr");
       
+      // Filter prayers for today AND exclude completed (only show Upcoming + In Progress)
       final todayPrayersList = allPrayers.where((prayer) {
         final prayerDate = prayer['prayer_date'] as String?;
-        print("Prayer date from API: $prayerDate, title: ${prayer['title']}");
-        // Handle both "YYYY-MM-DD" and potential variations
-        return prayerDate != null && prayerDate.startsWith(todayStr);
+        final status = (prayer['status'] as String? ?? '').toLowerCase();
+        // Only show today's prayers that are upcoming or inprogress (exclude completed)
+        return prayerDate != null && 
+               prayerDate.startsWith(todayStr) &&
+               (status == 'upcoming' || status == 'inprogress');
       }).toList();
 
-      print("Found ${todayPrayersList.length} prayers for today");
+      print("Found ${todayPrayersList.length} active prayers for today (excluding completed)");
 
       // Sort by start_time (ascending - earliest first)
       todayPrayersList.sort((a, b) {
@@ -105,7 +144,7 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> {
         return aTime.compareTo(bTime);
       });
 
-      // Get only the 5 latest/upcoming prayers (first 5 after sorting by time)
+      // Get only the first 5 prayers (after sorting by time)
       final limitedPrayers = todayPrayersList.take(5).toList();
 
       if (mounted) {
@@ -120,17 +159,21 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> {
       if (mounted) {
         setState(() {
           loadingPrayers = false;
-          todayPrayers = []; // Clear on error
-          totalTodayPrayers = 0; // Reset count on error
+          if (!silent) {
+            todayPrayers = []; // Clear on error only if not silent
+            totalTodayPrayers = 0; // Reset count on error only if not silent
+          }
         });
-        // Show error to user
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text("Failed to load prayers: ${e.toString()}"),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 3),
-          ),
-        );
+        // Show error only if not silent refresh
+        if (!silent) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("Failed to load prayers: ${e.toString()}"),
+              backgroundColor: Colors.red,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
       }
     }
   }
@@ -550,6 +593,7 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> {
     final title = prayer['title'] as String? ?? 'Prayer';
     final startTime = prayer['start_time'] as String?;
     final endTime = prayer['end_time'] as String?;
+    final status = (prayer['status'] as String? ?? 'upcoming').toLowerCase();
     
     String timeDisplay = "TBD";
     if (startTime != null && endTime != null) {
@@ -563,6 +607,96 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> {
       title: title,
       time: timeDisplay,
       location: "Main Prayer Hall", // Default location for prayers
+      status: status, // Add status for tag display
+    );
+  }
+  
+  /// Build status tag widget with visual emphasis for LIVE NOW
+  Widget _buildStatusTag(String status) {
+    String displayText;
+    Color backgroundColor;
+    Color textColor;
+    
+    switch (status.toLowerCase()) {
+      case 'inprogress':
+        // LIVE NOW - more prominent visual emphasis
+        displayText = 'LIVE NOW';
+        backgroundColor = Colors.red[50]!;
+        textColor = Colors.red[700]!;
+        break;
+      case 'completed':
+        displayText = 'COMPLETED';
+        backgroundColor = Colors.grey[200]!;
+        textColor = Colors.grey[700]!;
+        break;
+      case 'upcoming':
+      default:
+        displayText = 'UPCOMING';
+        backgroundColor = Colors.blue[50]!;
+        textColor = Colors.blue[700]!;
+        break;
+    }
+    
+    // Special styling for LIVE NOW (in-progress)
+    if (status.toLowerCase() == 'inprogress') {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: backgroundColor,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.red[600]!, width: 2),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.red.withAlpha((255 * 0.2).round()),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Pulsing dot indicator
+            Container(
+              width: 8,
+              height: 8,
+              margin: const EdgeInsets.only(right: 6),
+              decoration: BoxDecoration(
+                color: Colors.red[700]!,
+                shape: BoxShape.circle,
+              ),
+            ),
+            Text(
+              displayText,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                color: textColor,
+                letterSpacing: 1.0,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    
+    // Regular styling for other statuses
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: textColor.withAlpha((255 * 0.3).round()), width: 1),
+      ),
+      child: Text(
+        displayText,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: textColor,
+          letterSpacing: 0.5,
+        ),
+      ),
     );
   }
 
@@ -701,6 +835,7 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> {
     required String title,
     required String time,
     required String location,
+    String? status,
   }) {
     return Row(
       children: [
@@ -717,12 +852,22 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  if (status != null) ...[
+                    const SizedBox(width: 8),
+                    _buildStatusTag(status),
+                  ],
+                ],
               ),
               const SizedBox(height: 4),
               Row(

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/prayer_service.dart';
 import 'create_prayer_screen.dart';
@@ -9,36 +10,67 @@ class PastorEventsScreen extends StatefulWidget {
   State<PastorEventsScreen> createState() => _PastorEventsScreenState();
 }
 
-class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProviderStateMixin {
+class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProviderStateMixin, WidgetsBindingObserver {
   late TabController _mainTabController; // For Prayers | Events
-  late TabController _prayerFilterController; // For All | Today | Upcoming
+  late TabController _prayerFilterController; // For Today | Upcoming | Past
   List<Map<String, dynamic>> allPrayers = [];
   bool loading = false;
   String? error;
-  int prayerFilterIndex = 0; // 0=All, 1=Today, 2=Upcoming
+  int prayerFilterIndex = 0; // 0=Today, 1=Upcoming, 2=Past
+  
+  Timer? _autoRefreshTimer;
+  static const Duration _autoRefreshInterval = Duration(seconds: 45); // 45 seconds - balance between updates and battery
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _mainTabController = TabController(length: 2, vsync: this); // Prayers | Events
-    _prayerFilterController = TabController(length: 3, vsync: this); // All | Today | Upcoming
+    _prayerFilterController = TabController(length: 3, vsync: this); // Today | Upcoming | Past
     _loadPrayers();
+    _startAutoRefresh();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _autoRefreshTimer?.cancel();
     _mainTabController.dispose();
     _prayerFilterController.dispose();
     super.dispose();
   }
-
-  Future<void> _loadPrayers() async {
-    if (loading) return;
-
-    setState(() {
-      loading = true;
-      error = null;
+  
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // Force refresh when app comes to foreground
+    if (state == AppLifecycleState.resumed) {
+      _loadPrayers();
+      _startAutoRefresh(); // Restart timer
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      _autoRefreshTimer?.cancel(); // Stop timer when app goes to background
+    }
+  }
+  
+  void _startAutoRefresh() {
+    _autoRefreshTimer?.cancel();
+    _autoRefreshTimer = Timer.periodic(_autoRefreshInterval, (timer) {
+      if (mounted && prayerFilterIndex == 0) {
+        // Only auto-refresh if on "Today" tab
+        _loadPrayers(silent: true); // Silent refresh - no loading indicator
+      }
     });
+  }
+
+  Future<void> _loadPrayers({bool silent = false}) async {
+    if (loading && !silent) return; // Allow silent refresh even if loading
+
+    if (!silent) {
+      setState(() {
+        loading = true;
+        error = null;
+      });
+    }
 
     try {
       final prayers = await PrayerService.getAllPrayers();
@@ -67,7 +99,9 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
       if (mounted) {
         setState(() {
           loading = false;
-          error = "Failed to load prayers: ${e.toString()}";
+          if (!silent) {
+            error = "Failed to load prayers: ${e.toString()}";
+          }
         });
       }
     }
@@ -78,19 +112,27 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
     final todayStr = "${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}";
 
     switch (index) {
-      case 0: // All
-        return allPrayers;
-      case 1: // Today
+      case 0: // Today: In Progress (today) + Upcoming (today only)
         return allPrayers.where((prayer) {
           final prayerDate = prayer['prayer_date'] as String?;
-          return prayerDate != null && prayerDate.startsWith(todayStr);
+          final status = (prayer['status'] as String? ?? '').toLowerCase();
+          // Show today's prayers that are upcoming or inprogress (exclude completed)
+          return prayerDate != null && 
+                 prayerDate.startsWith(todayStr) &&
+                 (status == 'upcoming' || status == 'inprogress');
         }).toList();
-      case 2: // Upcoming (starting from tomorrow, excluding today)
+      case 1: // Upcoming: Future prayers (beyond today, status = upcoming)
         return allPrayers.where((prayer) {
           final prayerDate = prayer['prayer_date'] as String?;
+          final status = (prayer['status'] as String? ?? '').toLowerCase();
           if (prayerDate == null) return false;
-          // Only show prayers from tomorrow onwards (strictly greater than today)
-          return prayerDate.compareTo(todayStr) > 0;
+          // Show prayers from tomorrow onwards with status = upcoming
+          return prayerDate.compareTo(todayStr) > 0 && status == 'upcoming';
+        }).toList();
+      case 2: // Past: Completed prayers (status = completed, any date)
+        return allPrayers.where((prayer) {
+          final status = (prayer['status'] as String? ?? '').toLowerCase();
+          return status == 'completed';
         }).toList();
       default:
         return [];
@@ -158,6 +200,135 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
     return months[month - 1];
   }
 
+  /// Check if prayer has started (compare date + start_time with current time up to HH:MM precision)
+  bool _hasPrayerStarted(Map<String, dynamic> prayer) {
+    final prayerDate = prayer['prayer_date'] as String?;
+    final startTime = prayer['start_time'] as String?;
+    
+    if (prayerDate == null || startTime == null) {
+      return false; // If no date/time, assume it hasn't started (safe default)
+    }
+    
+    try {
+      // Parse date (YYYY-MM-DD)
+      final dateParts = prayerDate.split('-');
+      if (dateParts.length < 3) return false;
+      final year = int.parse(dateParts[0]);
+      final month = int.parse(dateParts[1]);
+      final day = int.parse(dateParts[2]);
+      
+      // Parse time (HH:MM:SS)
+      final timeParts = startTime.split(':');
+      if (timeParts.length < 2) return false;
+      final hour = int.parse(timeParts[0]);
+      final minute = int.parse(timeParts[1]);
+      
+      // Create prayer DateTime
+      final prayerDateTime = DateTime(year, month, day, hour, minute);
+      final now = DateTime.now();
+      
+      // Truncate to minute precision for comparison
+      final prayerTruncated = DateTime(year, month, day, hour, minute);
+      final nowTruncated = DateTime(now.year, now.month, now.day, now.hour, now.minute);
+      
+      // Check if prayer has started (including current moment)
+      return prayerTruncated.compareTo(nowTruncated) <= 0;
+    } catch (e) {
+      print("Error checking if prayer started: $e");
+      return false; // Safe default: assume it hasn't started
+    }
+  }
+
+  Future<void> _handleDeletePrayer(Map<String, dynamic> prayer) async {
+    final prayerId = prayer['id'] as int?;
+    if (prayerId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Invalid prayer ID")),
+      );
+      return;
+    }
+    
+    // Show confirmation dialog
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text("Delete Prayer?"),
+        content: const Text("Members will no longer see this prayer."),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text("Cancel"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text("Delete", style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed != true) return;
+    
+    // Show loading indicator
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation<Color>(Colors.white)),
+            ),
+            SizedBox(width: 16),
+            Text("Deleting prayer..."),
+          ],
+        ),
+        duration: Duration(seconds: 2),
+      ),
+    );
+    
+    try {
+      final success = await PrayerService.deletePrayer(prayerId);
+      
+      if (!mounted) return;
+      
+      if (success) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Prayer deleted successfully"),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+        // Refresh prayer list
+        _loadPrayers();
+      } else {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Failed to delete prayer"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      
+      // Extract friendly error message from exception
+      String errorMessage = e.toString().replaceFirst("Exception: ", "");
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(errorMessage),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
   void _handleCreateAction() {
     // Always show dialog with options (Prayer or Event)
     _showCreateOptionsDialog();
@@ -187,10 +358,17 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (_) => const CreatePrayerScreen(),
+                    builder: (_) => CreatePrayerScreen(
+                      onPrayerCreated: () {
+                        // Refresh prayers after creating and clicking "View Schedule"
+                        _loadPrayers();
+                      },
+                    ),
                   ),
                 ).then((_) {
-                  _loadPrayers(); // Refresh prayers after returning
+                  // Refresh prayers after returning from Create Prayer screen
+                  // (covers "Create Another" button or back button)
+                  _loadPrayers();
                 });
               },
               icon: const Icon(Icons.favorite, size: 20),
@@ -316,7 +494,7 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
 
     return Column(
       children: [
-        // Filter tabs: All, Today, Upcoming
+        // Filter tabs: Today, Upcoming, Past
         Container(
           color: Colors.grey[100],
           child: TabBar(
@@ -325,9 +503,9 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
             labelColor: Colors.blue[700],
             unselectedLabelColor: Colors.grey[600],
             tabs: const [
-              Tab(text: "All"),
               Tab(text: "Today"),
               Tab(text: "Upcoming"),
+              Tab(text: "Past"),
             ],
             onTap: (index) {
               setState(() {
@@ -340,9 +518,9 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
           child: TabBarView(
             controller: _prayerFilterController,
             children: [
-              _buildPrayersList(0), // All
-              _buildPrayersList(1), // Today
-              _buildPrayersList(2), // Upcoming
+              _buildPrayersList(0), // Today
+              _buildPrayersList(1), // Upcoming
+              _buildPrayersList(2), // Past
             ],
           ),
         ),
@@ -383,9 +561,15 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
                 await Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (_) => const CreatePrayerScreen(),
+                    builder: (_) => CreatePrayerScreen(
+                      onPrayerCreated: () {
+                        // Refresh prayers after creating and clicking "View Schedule"
+                        _loadPrayers();
+                      },
+                    ),
                   ),
                 );
+                // Refresh prayers when returning from Create Prayer screen
                 _loadPrayers();
               },
               icon: const Icon(Icons.add),
@@ -415,15 +599,104 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
 
   String _getEmptyMessage(int filterIndex) {
     switch (filterIndex) {
-      case 0:
-        return "No prayers yet";
-      case 1:
-        return "No prayers scheduled for today";
-      case 2:
+      case 0: // Today
+        return "No active prayers for today";
+      case 1: // Upcoming
         return "No upcoming prayers";
+      case 2: // Past
+        return "No completed prayers";
       default:
         return "No prayers";
     }
+  }
+
+  /// Build status tag widget with visual emphasis for LIVE NOW
+  Widget _buildStatusTag(String status) {
+    String displayText;
+    Color backgroundColor;
+    Color textColor;
+    
+    switch (status.toLowerCase()) {
+      case 'inprogress':
+        // LIVE NOW - more prominent visual emphasis
+        displayText = 'LIVE NOW';
+        backgroundColor = Colors.red[50]!;
+        textColor = Colors.red[700]!;
+        break;
+      case 'completed':
+        displayText = 'COMPLETED';
+        backgroundColor = Colors.grey[200]!;
+        textColor = Colors.grey[700]!;
+        break;
+      case 'upcoming':
+      default:
+        displayText = 'UPCOMING';
+        backgroundColor = Colors.blue[50]!;
+        textColor = Colors.blue[700]!;
+        break;
+    }
+    
+    // Special styling for LIVE NOW (in-progress)
+    if (status.toLowerCase() == 'inprogress') {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: backgroundColor,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.red[600]!, width: 2),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.red.withAlpha((255 * 0.2).round()),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Pulsing dot indicator
+            Container(
+              width: 8,
+              height: 8,
+              margin: const EdgeInsets.only(right: 6),
+              decoration: BoxDecoration(
+                color: Colors.red[700]!,
+                shape: BoxShape.circle,
+              ),
+            ),
+            Text(
+              displayText,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                color: textColor,
+                letterSpacing: 1.0,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    
+    // Regular styling for other statuses
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: textColor.withAlpha((255 * 0.3).round()), width: 1),
+      ),
+      child: Text(
+        displayText,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: textColor,
+          letterSpacing: 0.5,
+        ),
+      ),
+    );
   }
 
   Widget _buildPrayerCard(Map<String, dynamic> prayer) {
@@ -431,6 +704,8 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
     final prayerDate = prayer['prayer_date'] as String?;
     final startTime = prayer['start_time'] as String?;
     final endTime = prayer['end_time'] as String?;
+    final status = (prayer['status'] as String? ?? 'upcoming').toLowerCase();
+    final canDelete = status == 'upcoming'; // Only show delete if status is upcoming
 
     String timeDisplay = "TBD";
     if (startTime != null && endTime != null) {
@@ -439,12 +714,18 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
       timeDisplay = _formatTime(startTime);
     }
 
+    final isLive = status == 'inprogress';
+    
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
-      elevation: 2,
+      elevation: isLive ? 4 : 2, // Higher elevation for live prayers
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
+        side: isLive 
+          ? BorderSide(color: Colors.red[400]!, width: 2) // Red border for live prayers
+          : BorderSide.none,
       ),
+      color: isLive ? Colors.red[50]?.withAlpha((255 * 0.3).round()) : null, // Subtle background tint for live
       child: InkWell(
         onTap: () {
           // TODO: Navigate to prayer details
@@ -460,22 +741,37 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: Colors.blue[50],
+                  color: isLive ? Colors.red[50] : Colors.blue[50],
                   borderRadius: BorderRadius.circular(10),
+                  border: isLive 
+                    ? Border.all(color: Colors.red[300]!, width: 1.5)
+                    : null,
                 ),
-                child: const Icon(Icons.favorite, color: Colors.blue, size: 24),
+                child: Icon(
+                  Icons.favorite,
+                  color: isLive ? Colors.red[700] : Colors.blue,
+                  size: 24,
+                ),
               ),
               const SizedBox(width: 16),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            title,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        _buildStatusTag(status),
+                      ],
                     ),
                     const SizedBox(height: 8),
                     Row(
@@ -512,7 +808,19 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
                   ],
                 ),
               ),
-              const Icon(Icons.chevron_right, color: Colors.grey),
+              // Show delete button only if prayer hasn't started
+              if (canDelete)
+                IconButton(
+                  icon: const Icon(Icons.delete_outline, color: Colors.red),
+                  tooltip: "Delete prayer",
+                  onPressed: () {
+                    _handleDeletePrayer(prayer);
+                  },
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+              if (!canDelete)
+                const Icon(Icons.chevron_right, color: Colors.grey),
             ],
           ),
         ),

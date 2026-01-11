@@ -46,6 +46,7 @@ class PrayerResponse(PrayerCreate):
     Response schema returned by API.
     """
     id: int
+    status: str  # upcoming, inprogress, completed
     created_by: int  # Now required, not optional
 
     class Config:

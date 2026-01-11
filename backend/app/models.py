@@ -31,6 +31,8 @@ class Prayer(Base):
     start_time = Column(Time, nullable=False)
     end_time = Column(Time, nullable=False)
 
+    status = Column(String, nullable=False, default="upcoming", index=True)  # upcoming, inprogress, completed
+
     created_by = Column(
         Integer,
         ForeignKey("users.id", ondelete="CASCADE"),

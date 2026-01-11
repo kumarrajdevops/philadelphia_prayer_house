@@ -66,5 +66,35 @@ class PrayerService {
       return [];
     }
   }
+
+  /// Delete a prayer
+  /// Returns true on success, false on failure
+  /// Throws exception if prayer has already started
+  static Future<bool> deletePrayer(int prayerId) async {
+    try {
+      final headers = await ApiClient.authHeaders();
+      
+      final res = await http.delete(
+        ApiClient.uri("/prayers/$prayerId"),
+        headers: headers,
+      );
+
+      if (res.statusCode == 204) {
+        return true;
+      } else {
+        print("Delete prayer failed: ${res.statusCode} - ${res.body}");
+        try {
+          final errorData = jsonDecode(res.body);
+          throw Exception(errorData["detail"] ?? "Failed to delete prayer");
+        } catch (e) {
+          if (e is Exception) rethrow;
+          throw Exception("Failed to delete prayer");
+        }
+      }
+    } catch (e) {
+      print("Delete prayer error: $e");
+      rethrow;
+    }
+  }
 }
 
