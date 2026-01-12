@@ -1,5 +1,5 @@
-from datetime import date, time
-from typing import Optional
+from datetime import date, time, datetime
+from typing import Optional, List
 from pydantic import BaseModel
 
 
@@ -69,3 +69,112 @@ class PrayerResponse(PrayerCreate):
 
     class Config:
         from_attributes = True
+
+
+# =========================
+# Event Schemas
+# =========================
+
+class EventSeriesCreate(BaseModel):
+    """
+    Input schema for creating an event series.
+    """
+    title: str
+    description: Optional[str] = None
+    event_type: str  # "online" or "offline"
+    location: Optional[str] = None  # Required for offline
+    join_info: Optional[str] = None  # Required for online
+    start_datetime: datetime
+    end_datetime: datetime
+    recurrence_type: str = "none"  # none, daily, weekly, monthly
+    recurrence_days: Optional[str] = None  # For weekly: comma-separated days (0=Mon, 6=Sun)
+    recurrence_end_date: Optional[date] = None
+    recurrence_count: Optional[int] = None
+
+
+class EventSeriesUpdate(BaseModel):
+    """
+    Input schema for updating an event series.
+    """
+    title: str
+    description: Optional[str] = None
+    event_type: str
+    location: Optional[str] = None
+    join_info: Optional[str] = None
+    recurrence_type: str
+    recurrence_days: Optional[str] = None
+    recurrence_end_date: Optional[date] = None
+    recurrence_count: Optional[int] = None
+    is_active: bool = True
+
+
+class EventOccurrenceResponse(BaseModel):
+    """
+    Response schema for event occurrence (what everyone sees).
+    """
+    id: int
+    event_series_id: int
+    title: str
+    description: Optional[str]
+    event_type: str
+    location: Optional[str]
+    join_info: Optional[str]
+    start_datetime: datetime
+    end_datetime: datetime
+    status: str  # upcoming, ongoing, completed
+    recurrence_type: Optional[str]  # For label display
+
+    class Config:
+        from_attributes = True
+
+
+class EventOccurrenceUpdate(BaseModel):
+    """
+    Input schema for updating a single occurrence.
+    """
+    title: str
+    description: Optional[str] = None
+    event_type: str
+    location: Optional[str] = None
+    join_info: Optional[str] = None
+    start_datetime: datetime
+    end_datetime: datetime
+
+
+class EventSeriesResponse(BaseModel):
+    """
+    Response schema for event series (pastor view).
+    """
+    id: int
+    title: str
+    description: Optional[str]
+    event_type: str
+    location: Optional[str]
+    join_info: Optional[str]
+    recurrence_type: str
+    recurrence_days: Optional[str]
+    recurrence_end_date: Optional[date]
+    recurrence_count: Optional[int]
+    created_by: int
+    is_active: bool
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class EventPreviewItem(BaseModel):
+    """
+    Preview item for generated occurrences.
+    """
+    start_datetime: datetime
+    end_datetime: datetime
+    date_label: str  # Human-readable date string
+
+
+class EventCreatePreview(BaseModel):
+    """
+    Preview of occurrences that will be generated.
+    """
+    occurrences: List[EventPreviewItem]

@@ -249,17 +249,43 @@ Authorization: Bearer <access_token>
 - Edit/Delete only allowed before prayer starts
 - Completed prayers cannot be deleted (audit safety)
 
-### Event Endpoints (📅 Organizational Activities) - ⚠️ NOT YET IMPLEMENTED
+### Event Endpoints (📅 Organizational Activities)
 
 | Endpoint | Method | Description | Auth Required |
 |----------|--------|-------------|---------------|
-| `/events` | GET | List all events (optional: `?date=`, `?type=`, `?upcoming=true`) | No |
-| `/events` | POST | Create event (Pastor/Admin only). Body: `{ title, event_date, start_time, end_time, location, description, event_type, ... }` | Yes |
-| `/events/:id` | GET | Get event details | No |
-| `/events/:id` | PUT | Update event (Pastor/Admin only) | Yes |
-| `/events/:id` | DELETE | Delete event (Pastor/Admin only) | Yes |
+| `/events/preview` | POST | Preview next 5 occurrences for recurring events | Yes |
+| `/events` | POST | Create event series and generate occurrences (Pastor/Admin only). Body: `{ title, description, location, start_datetime, end_datetime, recurrence_type, recurrence_days, recurrence_end_date, recurrence_count }` | Yes |
+| `/events/occurrences` | GET | List all event occurrences (optional: `?tab=today|upcoming|past`). Returns occurrences with computed `status` field (`upcoming`, `ongoing`, `completed`) | No |
+| `/events/occurrences/{id}` | GET | Get event occurrence by ID | No |
+| `/events/occurrences/{id}` | PUT | Update event occurrence (Pastor/Admin only). Query param: `?apply_to_future=true|false` (for recurring events) | Yes |
+| `/events/occurrences/{id}` | DELETE | Delete event occurrence (Pastor/Admin only). Query param: `?apply_to_future=true|false` (for recurring events) | Yes |
 
-**Note:** Events are complex, infrequent organizational activities. Rich metadata (location, description, banner, RSVP).
+**Event Types:**
+- `offline` (default): Physical gathering requiring `location` field
+
+**Event Status (Auto-computed):**
+- `upcoming`: Event hasn't started yet (can be edited/deleted)
+- `ongoing`: Event is currently live (cannot be edited/deleted)
+- `completed`: Event has ended (cannot be edited/deleted)
+
+**Recurrence Types:**
+- `none`: Single event
+- `daily`: Daily recurrence
+- `weekly`: Weekly recurrence (requires `recurrence_days` - comma-separated weekday numbers)
+- `monthly`: Monthly recurrence
+
+**Recurrence End Conditions:**
+- `recurrence_end_date`: End on specific date
+- `recurrence_count`: End after N occurrences
+
+**Validation Rules:**
+- Cannot create events with past start/end datetimes
+- Cannot edit/delete events after they start
+- Offline events require `location` field
+- Multi-day events supported (start and end on different dates)
+- 3-month rolling generation for recurring events (lazy generation for future)
+
+**Note:** Events are complex, infrequent organizational activities. Support for single and recurring events with multi-day duration. Status is computed dynamically based on current time vs. event start/end datetime.
 
 ### Health Check
 
@@ -438,6 +464,94 @@ All statuses are **automatically computed** at runtime based on current time vs 
 
 ---
 
+## 📅 Event Lifecycle Model
+
+### Status Definitions
+
+All statuses are **automatically computed** at runtime based on current time vs event datetimes. No manual status changes.
+
+#### 1️⃣ **Upcoming**
+- **Condition:** `current_time < start_datetime`
+- **Meaning:** Event is scheduled, has not started yet
+- **Permissions:** ✅ Editable, ✅ Deletable
+- **Visible in:** Home → Today's Events, Tabs → Today / Upcoming
+
+#### 2️⃣ **Ongoing**
+- **Condition:** `start_datetime ≤ current_time < end_datetime`
+- **Meaning:** Event is actively happening, members may be attending
+- **Permissions:** ❌ Not editable, ❌ Not deletable
+- **Visible in:** Home → LIVE NOW section (very important), Tabs → Today
+- **Visual:** "LIVE NOW" badge with red highlighting
+
+#### 3️⃣ **Completed**
+- **Condition:** `current_time ≥ end_datetime`
+- **Meaning:** Event has ended, becomes part of historical record
+- **Permissions:** ❌ Not editable, ❌ Not deletable (audit safety)
+- **Visible in:** Tabs → Past only
+- **Note:** Never deleted (audit & accountability)
+
+### Status Transitions
+
+**Upcoming → Ongoing → Completed**
+
+- Transitions happen automatically based on time
+- No backend cron required (computed at runtime)
+- No buttons, no toggles, no mistakes
+
+### Recurring Events
+
+**Recurrence Types:**
+- `none`: Single event (no recurrence)
+- `daily`: Event repeats every day
+- `weekly`: Event repeats on selected weekdays
+- `monthly`: Event repeats on the same date each month
+
+**End Conditions:**
+- `recurrence_end_date`: Stop recurring on a specific date
+- `recurrence_count`: Stop after N occurrences
+
+**Generation Strategy:**
+- 3-month rolling generation (always have next 3 months of occurrences)
+- Lazy generation for future occurrences beyond 3 months
+- Occurrences are generated when series is created
+- Future occurrences can be updated/deleted with "This and Future" option
+
+### Multi-Day Events
+
+Events can span multiple days:
+- `start_datetime` and `end_datetime` can be on different dates
+- Status computation handles multi-day events correctly
+- Display shows date range for multi-day events
+
+### Edit / Delete Rules
+
+**Edit:** ✅ Allowed **ONLY** before event starts (`status == 'upcoming'`)
+- Backend validates and rejects if event has started
+- Backend validates new start_datetime is not in the past
+- For recurring events: "This Occurrence Only" vs "This and Future" option
+
+**Delete:** ✅ Allowed **ONLY** before event starts (`status == 'upcoming'`)
+- Backend validates and rejects if event has started
+- For recurring events: "This Occurrence Only" vs "This and Future" option
+- Confirmation dialog: "Delete Event? Members will no longer see this event."
+
+**Completed Events:** ❌ Never deleted (audit safety, church history)
+
+### Tabs Structure
+
+**Tabs (Pastor → Events view, Member → Events view):**
+```
+[ Today ] [ Upcoming ] [ Past ]
+```
+
+- **Today:** Ongoing (today) + Upcoming (today only, excluding completed)
+- **Upcoming:** Future events (beyond today, excluding today's events)
+- **Past:** Completed events (end_datetime < now OR status = completed)
+
+**Rule:** No overlap. No confusion.
+
+---
+
 ## 👥 Member Dashboard
 
 ### Overview
@@ -496,7 +610,7 @@ Complete implementation of the Member Dashboard following the product design spe
 
 #### 5. Quick Actions (2x2 Grid)
 - **Prayers** - Navigates to schedule (✅ Functional)
-- **Events** - Coming soon (🔜 Placeholder)
+- **Events** - Navigates to Events screen (✅ Functional)
 - **Bible** - Coming soon (🔜 Placeholder)
 - **Song Lyrics** - Coming soon (🔜 Placeholder)
 
@@ -545,40 +659,78 @@ Backend enforces role-based access control; frontend UI reflects read-only natur
 
 ---
 
-### Events Table (📅 Organizational Activities) - ⚠️ NOT YET IMPLEMENTED
+### Events Tables (📅 Organizational Activities)
 
-**Purpose:** Store scheduled church events (infrequent, longer-duration, organizational activities).
+**Purpose:** Store scheduled church events (infrequent, longer-duration, organizational activities) with support for single and recurring events.
+
+#### Event Series Table
 
 ```sql
 - id (PK, Integer)
-- title (String, NOT NULL)                    -- e.g., "Christmas Celebration", "Youth Meeting"
-- event_date (Date, NOT NULL, INDEXED)        -- Date of the event
-- start_time (Time, NOT NULL)                 -- Start time
-- end_time (Time, NOT NULL)                   -- End time
-- location (String, NULLABLE)                 -- Venue/location (important for events)
-- description (Text, NULLABLE)                -- Event details (rich metadata)
-- banner_image_url (String, NULLABLE)         -- Banner/cover image URL (future)
-- event_type (String)                         -- Category: "celebration", "meeting", "seminar", etc.
-- is_rsvp_enabled (Boolean, default: false)   -- Whether RSVP is required (future)
-- max_attendees (Integer, NULLABLE)           -- Maximum attendees (future)
+- title (String, NOT NULL)                    -- e.g., "Sunday Service", "Youth Fellowship"
+- description (String, NULLABLE)              -- Event details
+- event_type (String, default: "offline", NOT NULL)  -- "offline" only (v1)
+- location (String, NOT NULL)                 -- Venue/location (required for offline events)
+- recurrence_type (String, NOT NULL)         -- "none", "daily", "weekly", "monthly"
+- recurrence_days (String, NULLABLE)          -- Comma-separated weekday numbers (for weekly)
+- recurrence_end_date (Date, NULLABLE)       -- End on specific date
+- recurrence_count (Integer, NULLABLE)        -- End after N occurrences
 - created_by (Integer, FK → users.id, NOT NULL, INDEXED)
+- is_active (Boolean, default: true, NOT NULL)
 - created_at (DateTime, timezone)
 - updated_at (DateTime, timezone)
 ```
 
+#### Event Occurrences Table
+
+```sql
+- id (PK, Integer)
+- event_series_id (Integer, FK → event_series.id, NOT NULL, INDEXED)
+- title (String, NOT NULL)                    -- Copied from series (can be overridden)
+- description (String, NULLABLE)              -- Copied from series
+- event_type (String, default: "offline", NOT NULL)
+- location (String, NOT NULL)                 -- Copied from series
+- start_datetime (DateTime, timezone, NOT NULL, INDEXED)  -- Full datetime (supports multi-day)
+- end_datetime (DateTime, timezone, NOT NULL, INDEXED)    -- Full datetime (supports multi-day)
+- status (String, default: "upcoming", NOT NULL)  -- Computed: "upcoming", "ongoing", "completed"
+- recurrence_type (String, NULLABLE)          -- Label for display (e.g., "Weekly")
+- created_at (DateTime, timezone)
+- updated_at (DateTime, timezone)
+```
+
+**Event Types:**
+- **Offline Event:** Physical gathering requiring `location` field (v1 - only type supported)
+
+**Status Lifecycle:**
+- Status is computed dynamically based on current time vs. event start/end datetime
+- `upcoming`: Event hasn't started (editable/deletable)
+- `ongoing`: Event is currently live (read-only, "LIVE NOW")
+- `completed`: Event has ended (read-only, archived)
+
+**Recurrence Support:**
+- ✅ Single events (`recurrence_type: "none"`)
+- ✅ Daily recurrence
+- ✅ Weekly recurrence (with day selection)
+- ✅ Monthly recurrence
+- ✅ End conditions: specific date or occurrence count
+- ✅ 3-month rolling generation (lazy generation for future)
+
 **Characteristics:**
-- ✅ Rich metadata (Events are complex, infrequent activities)
-- ✅ Location is important (can vary by event)
-- ✅ Description helps members understand event purpose
-- ✅ RSVP functionality planned for v1.5
+- ✅ Multi-day events supported (start and end on different dates)
+- ✅ Recurring events with flexible end conditions
+- ✅ Status auto-computed at runtime
+- ✅ Edit/Delete only allowed before event starts
+- ✅ "This and Future" option for recurring event updates/deletions
+- ✅ Location required for all events (offline only in v1)
 
 **Indexes:**
-- `ix_events_date` - Index on `event_date` for quick date filtering
-- `ix_events_type` - Index on `event_type` for filtering
+- `ix_event_occurrences_series_id` - Index on `event_series_id`
+- `ix_event_occurrences_start_datetime` - Index on `start_datetime` for filtering
+- `ix_event_series_created_by` - Index on `created_by`
 
 **Relationships:**
-- `creator` (User) - Many-to-one relationship
-- `rsvps` (EventRSVP) - One-to-many relationship (future)
+- `event_series.creator` (User) - Many-to-one relationship
+- `event_occurrences.event_series` (EventSeries) - Many-to-one relationship
 
 ### OTPs Table
 
@@ -758,16 +910,23 @@ curl -X POST http://localhost:8000/auth/otp/request \
 - [x] Quick Actions (Prayers, Events, Bible, Song Lyrics)
 - [x] Bottom navigation (Home, Prayers, Events, Requests)
 - [x] Drawer menu (Profile, Calendar, Help & Support, Settings, Logout)
+- [x] Events system (complete implementation)
+- [x] Events backend model & API (event_series and event_occurrences tables)
+- [x] Recurring events support (daily, weekly, monthly)
+- [x] Multi-day events support
+- [x] Event status auto-computation (upcoming, ongoing, completed)
+- [x] Create Event screen with recurrence options and preview
+- [x] Edit Event screen with "This and Future" option
+- [x] Event Details screens (Pastor and Member)
+- [x] Events tab UI (Pastor: Prayers + Events split view, Member: Events only)
+- [x] Event filtering and sorting (Today, Upcoming, Past tabs)
+- [x] Event badges and status indicators
+- [x] Home screen Events integration (LIVE NOW section, Today's Events)
+- [x] Member Shell with shared bottom navigation
+- [x] Event sorting (matching prayer sorting logic)
 
 ### 🚧 In Progress
 
-- [x] Create Prayer screen (✅ Complete)
-- [x] Edit Prayer screen (✅ Complete)
-- [x] Prayer Details page (✅ Complete)
-- [x] Prayer lifecycle management (✅ Complete)
-- [x] Member Dashboard (✅ Complete)
-- [ ] Events backend model & API (separate from Prayers)
-- [ ] Events tab UI (split view: Prayers + Events)
 - [ ] Prayer requests API & UI
 - [ ] User settings (password change, email update)
 
@@ -832,13 +991,18 @@ The Pastor Panel is the control center where pastors manage prayer hall activiti
 
 ### 📅 5. Events & Meetings
 
-- [ ] Create church events (Prayer meetings, Fasting, Youth meet)
-- [ ] Date, time, location, banner image
-- [ ] Event description and details
+- [x] Create church events (Prayer meetings, Fasting, Youth meet) ✅
+- [x] Date, time, location ✅
+- [x] Event description and details ✅
+- [x] Recurring events support (daily, weekly, monthly) ✅
+- [x] Multi-day events support ✅
+- [x] Event status auto-computation ✅
+- [x] Edit/Delete events (before start) ✅
+- [x] "This and Future" option for recurring events ✅
+- [ ] Banner image upload
 - [ ] RSVP functionality
 - [ ] Attendance tracking
 - [ ] Event reminders via notifications
-- [ ] Recurring events support
 - [ ] Event categories
 - [ ] Export attendance reports
 
@@ -957,12 +1121,10 @@ The Pastor Panel is the control center where pastors manage prayer hall activiti
    - Pastor panel for prayer request management
 
 ### Short Term (Priority 2)
-4. **Events & Announcements Management**
-   - Create events table
-   - Add CRUD endpoints
-   - Upcoming/past events
+4. **Announcements Management**
    - Announcements system
-   - Push notifications for events/announcements
+   - Push notifications for announcements
+   - Scheduled announcements
 
 5. **Sermons & Messages**
    - Sermon upload (text, audio, video)
@@ -1035,7 +1197,33 @@ Private project for Philadelphia Prayer House
 
 ## 📝 Recent Updates
 
-### Latest Features (2026-01-03)
+### Latest Features (2026-01-18)
+- ✅ **Events System** - Complete implementation
+  - Backend: Event series and occurrences tables with recurrence support
+  - API endpoints: Create, list, update, delete events with "This and Future" option
+  - Recurring events: Daily, weekly, monthly with flexible end conditions
+  - Multi-day events support (start and end on different dates)
+  - Event status auto-computation (upcoming, ongoing, completed)
+  - 3-month rolling generation for recurring events
+  - Pastor Panel:
+    - Create Event screen with recurrence options and live preview
+    - Edit Event screen with "This and Future" option
+    - Event Details screen with separated date/time display
+    - Events tab with Today/Upcoming/Past filtering and sorting
+    - Event badges and status indicators
+    - Home screen integration (LIVE NOW section, Today's Events)
+  - Member Panel:
+    - Member Shell with shared bottom navigation bar
+    - Events screen with Today/Upcoming/Past tabs
+    - Event Details screen (read-only)
+    - Home screen integration (LIVE NOW section, Today's Events)
+  - Sorting: Events sorted consistently (ascending for Today/Upcoming, descending for Past)
+  - Filtering: Excludes completed from Today, excludes today's events from Upcoming
+  - UI consistency: Event badges, status badges, separated date/time display
+  - Timezone handling: UTC in backend, local time in frontend
+  - Auto-refresh: 45-second interval for live events
+
+### Previous Features (2026-01-03)
 - ✅ **Member Dashboard** - Complete implementation
   - Member Home screen with greeting and LIVE NOW section
   - Verse of the Day (displays when no live prayers, 12 verses in rotation)
@@ -1085,4 +1273,4 @@ Private project for Philadelphia Prayer House
 ---
 
 **Status:** 🚧 In Active Development  
-**Last Updated:** 2026-01-03
+**Last Updated:** 2026-01-18

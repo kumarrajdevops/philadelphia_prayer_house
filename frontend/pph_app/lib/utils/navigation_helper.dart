@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../pastor/pastor_shell.dart';
-import '../member/member_home_screen.dart';
+import '../member/member_shell.dart';
 
 class NavigationHelper {
   /// Navigate to appropriate home screen based on user role
@@ -21,7 +21,7 @@ class NavigationHelper {
     } else {
       Navigator.pushAndRemoveUntil(
         context,
-        MaterialPageRoute(builder: (_) => const MemberHomeScreen()),
+        MaterialPageRoute(builder: (_) => const MemberShell()),
         (_) => false,
       );
     }

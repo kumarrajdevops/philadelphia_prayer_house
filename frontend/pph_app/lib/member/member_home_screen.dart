@@ -2,11 +2,15 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:intl/intl.dart';
 import '../auth/login_screen.dart';
 import '../auth/auth_service.dart';
 import '../services/prayer_service.dart';
+import '../services/event_service.dart';
 import 'member_prayer_details_screen.dart';
+import 'member_event_details_screen.dart';
 import 'member_schedule_screen.dart';
+import 'member_events_screen.dart';
 
 class MemberHomeScreen extends StatefulWidget {
   const MemberHomeScreen({super.key});
@@ -20,8 +24,9 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
   bool _loading = true;
   List<Map<String, dynamic>> _todayPrayers = [];
   List<Map<String, dynamic>> _livePrayers = [];
+  List<Map<String, dynamic>> _todayEvents = [];
+  List<Map<String, dynamic>> _liveEvents = [];
   Timer? _refreshTimer;
-  int _selectedIndex = 0;
 
   @override
   void initState() {
@@ -29,6 +34,7 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
     WidgetsBinding.instance.addObserver(this);
     _loadMemberInfo();
     _loadTodayPrayers();
+    _loadTodayEvents();
     _startAutoRefresh();
   }
 
@@ -43,6 +49,7 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _loadTodayPrayers(); // Force refresh when app comes to foreground
+      _loadTodayEvents();
     } else if (state == AppLifecycleState.paused) {
       _refreshTimer?.cancel(); // Stop timer when app goes to background
     } else if (state == AppLifecycleState.inactive) {
@@ -55,6 +62,7 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
     _refreshTimer = Timer.periodic(const Duration(seconds: 45), (_) {
       if (mounted) {
         _loadTodayPrayers(silent: true);
+        _loadTodayEvents(silent: true);
       }
     });
   }
@@ -113,6 +121,73 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text("Failed to load prayers: ${e.toString()}"),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _loadTodayEvents({bool silent = false}) async {
+    try {
+      final events = await EventService.getEventOccurrences();
+      final now = DateTime.now();
+      final todayStart = DateTime(now.year, now.month, now.day);
+      final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);
+      
+      if (mounted) {
+        final todayList = events.where((event) {
+          final startStr = event['start_datetime'] as String?;
+          final endStr = event['end_datetime'] as String?;
+          final status = (event['status'] as String? ?? 'upcoming').toLowerCase();
+          
+          if (startStr == null || endStr == null) return false;
+          
+          // Exclude completed events
+          if (status == 'completed') return false;
+          
+          try {
+            final start = DateTime.parse(startStr).toLocal();
+            final end = DateTime.parse(endStr).toLocal();
+            
+            // Show if ongoing OR starts today (but not completed)
+            return (start.isBefore(todayEnd) && end.isAfter(todayStart)) ||
+                   (start.isAfter(todayStart) && start.isBefore(todayEnd));
+          } catch (e) {
+            return false;
+          }
+        }).toList()
+          ..sort((a, b) {
+            final timeA = a['start_datetime'] as String? ?? '';
+            final timeB = b['start_datetime'] as String? ?? '';
+            return timeA.compareTo(timeB);
+          });
+
+        // Find all live/ongoing events
+        final liveEvents = todayList.where((e) {
+          return (e['status'] as String? ?? 'upcoming').toLowerCase() == 'ongoing';
+        }).toList()
+          ..sort((a, b) {
+            final timeA = a['start_datetime'] as String? ?? '';
+            final timeB = b['start_datetime'] as String? ?? '';
+            return timeA.compareTo(timeB);
+          });
+
+        // Get top 5 events
+        final limitedEvents = todayList.take(5).toList();
+
+        setState(() {
+          _todayEvents = limitedEvents;
+          _liveEvents = liveEvents;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        if (!silent) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("Failed to load events: ${e.toString()}"),
               backgroundColor: Colors.red,
             ),
           );
@@ -242,8 +317,21 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
   }
 
   Widget _buildLiveNowCard() {
-    // If there are live prayers, show them
-    if (_livePrayers.isNotEmpty) {
+    // Combine live prayers and live events
+    final hasLiveContent = _livePrayers.isNotEmpty || _liveEvents.isNotEmpty;
+    
+    if (hasLiveContent) {
+      // Separate offline and online prayers
+      final offlinePrayers = _livePrayers.where((prayer) {
+        final prayerType = (prayer['prayer_type'] as String? ?? 'offline').toLowerCase();
+        return prayerType == 'offline';
+      }).toList();
+      
+      final onlinePrayers = _livePrayers.where((prayer) {
+        final prayerType = (prayer['prayer_type'] as String? ?? 'offline').toLowerCase();
+        return prayerType == 'online';
+      }).toList();
+
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -259,12 +347,15 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
               ),
             ),
           ),
-          ..._livePrayers.map((prayer) => _buildSingleLivePrayerCard(prayer)),
+          // Priority order: Events (top) -> Offline Prayers (medium) -> Online Prayers (medium)
+          ..._liveEvents.map((event) => _buildSingleLiveEventCard(event)),
+          ...offlinePrayers.map((prayer) => _buildSingleLivePrayerCard(prayer)),
+          ...onlinePrayers.map((prayer) => _buildSingleLivePrayerCard(prayer)),
         ],
       );
     }
 
-    // If no live prayers, show Verse of the Day
+    // If no live content, show Verse of the Day
     return _buildVerseOfTheDay();
   }
 
@@ -519,6 +610,38 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
                           ],
                         ),
                         const SizedBox(height: 8),
+                        // Prayer Type Badge
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: prayerType == 'online' ? Colors.green[50] : Colors.orange[50],
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: prayerType == 'online' ? Colors.green[300]! : Colors.orange[300]!,
+                              width: 1,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                prayerType == 'online' ? Icons.chat : Icons.location_on,
+                                size: 12,
+                                color: prayerType == 'online' ? Colors.green[700] : Colors.orange[700],
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                prayerType == 'online' ? 'Online Prayer' : 'Offline Prayer',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                  color: prayerType == 'online' ? Colors.green[700] : Colors.orange[700],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 8),
                         Row(
                           children: [
                             Icon(Icons.access_time, size: 16, color: Colors.grey[700]),
@@ -528,26 +651,6 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
                               style: TextStyle(
                                 fontSize: 14,
                                 color: Colors.grey[700],
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        // Prayer type indicator
-                        Row(
-                          children: [
-                            Icon(
-                              prayerType == 'online' ? Icons.chat : Icons.location_on,
-                              size: 16,
-                              color: prayerType == 'online' ? Colors.green[700] : Colors.orange[700],
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              prayerType == 'online' ? 'Online Prayer' : 'Offline Prayer',
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: prayerType == 'online' ? Colors.green[700] : Colors.orange[700],
                                 fontWeight: FontWeight.w500,
                               ),
                             ),
@@ -630,6 +733,205 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
     );
   }
 
+  Widget _buildSingleLiveEventCard(Map<String, dynamic> event) {
+    final title = event['title'] as String? ?? 'Event';
+    final startStr = event['start_datetime'] as String?;
+    final endStr = event['end_datetime'] as String?;
+    final location = event['location'] as String?;
+
+    String timeDisplay = "TBD";
+    if (startStr != null && endStr != null) {
+      try {
+        final start = DateTime.parse(startStr).toLocal();
+        final end = DateTime.parse(endStr).toLocal();
+        if (start.year == end.year && start.month == end.month && start.day == end.day) {
+          // Same day
+          timeDisplay = "${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
+        } else {
+          // Multi-day
+          timeDisplay = "${DateFormat('MMM d, h:mm a').format(start)} - ${DateFormat('MMM d, h:mm a').format(end)}";
+        }
+      } catch (e) {
+        timeDisplay = "$startStr - $endStr";
+      }
+    }
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.red[50],
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.red[400]!, width: 2),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.red.withOpacity(0.2),
+            blurRadius: 8,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: InkWell(
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => MemberEventDetailsScreen(event: event),
+            ),
+          );
+        },
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.red[100],
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.event, color: Colors.red, size: 28),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                title,
+                                style: const TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: Colors.red[100],
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: Colors.red[600]!, width: 2),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    width: 8,
+                                    height: 8,
+                                    margin: const EdgeInsets.only(right: 6),
+                                    decoration: const BoxDecoration(
+                                      color: Colors.red,
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                  const Text(
+                                    'LIVE NOW',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.red,
+                                      letterSpacing: 1.0,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        // Event Badge
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.purple[50],
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: Colors.purple[300]!, width: 1),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.event, size: 12, color: Colors.purple[700]),
+                              const SizedBox(width: 4),
+                              Text(
+                                'Event',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.purple[700],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Icon(Icons.access_time, size: 16, color: Colors.grey[700]),
+                            const SizedBox(width: 6),
+                            Text(
+                              timeDisplay,
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.grey[700],
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (location != null && location.isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Icon(Icons.location_on, size: 16, color: Colors.orange[700]),
+                              const SizedBox(width: 6),
+                              Text(
+                                'Event at $location',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: Colors.orange[700],
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              if (location != null && location.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () => _openGoogleMaps(location),
+                    icon: const Icon(Icons.map),
+                    label: const Text("Open in Google Maps"),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.blue[700],
+                      side: BorderSide(color: Colors.blue[700]!),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildTodayPrayersList() {
     // Filter out live prayer from today's list
     final upcomingPrayers = _todayPrayers.where((prayer) {
@@ -688,6 +990,200 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
         else
           ...upcomingPrayers.map((prayer) => _buildPrayerCard(prayer)),
       ],
+    );
+  }
+
+  Widget _buildTodayEventsList() {
+    // Filter out live events from today's list
+    final upcomingEvents = _todayEvents.where((event) {
+      final status = (event['status'] as String? ?? 'upcoming').toLowerCase();
+      return status == 'upcoming';
+    }).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+          child: const Text(
+            "Today's Events",
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        if (upcomingEvents.isEmpty)
+          Container(
+            margin: const EdgeInsets.symmetric(horizontal: 20),
+            padding: const EdgeInsets.all(32),
+            decoration: BoxDecoration(
+              color: Colors.grey[50],
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.grey[200]!),
+            ),
+            child: Column(
+              children: [
+                Icon(Icons.event_outlined, size: 48, color: Colors.grey[400]),
+                const SizedBox(height: 16),
+                const Text(
+                  "No events scheduled for today.",
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500,
+                    color: Colors.black87,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  "Please check back later.",
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey[600],
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          )
+        else
+          ...upcomingEvents.map((event) => _buildEventCard(event)),
+      ],
+    );
+  }
+
+  Widget _buildEventCard(Map<String, dynamic> event) {
+    final title = event['title'] as String? ?? 'Event';
+    final startStr = event['start_datetime'] as String?;
+    final endStr = event['end_datetime'] as String?;
+    final status = (event['status'] as String? ?? 'upcoming').toLowerCase();
+    final location = event['location'] as String?;
+
+    String timeDisplay = "TBD";
+    if (startStr != null && endStr != null) {
+      try {
+        final start = DateTime.parse(startStr).toLocal();
+        final end = DateTime.parse(endStr).toLocal();
+        if (start.year == end.year && start.month == end.month && start.day == end.day) {
+          // Same day
+          timeDisplay = "${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
+        } else {
+          // Multi-day
+          timeDisplay = "${DateFormat('MMM d, h:mm a').format(start)} - ${DateFormat('MMM d, h:mm a').format(end)}";
+        }
+      } catch (e) {
+        timeDisplay = "$startStr - $endStr";
+      }
+    }
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+      child: Card(
+        elevation: 2,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: InkWell(
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => MemberEventDetailsScreen(event: event),
+              ),
+            );
+          },
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.purple[50],
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.event, color: Colors.purple, size: 24),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              title,
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: status == 'ongoing' ? Colors.red[50] : Colors.blue[50],
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: status == 'ongoing' ? Colors.red[300]! : Colors.blue[300]!,
+                                width: 1,
+                              ),
+                            ),
+                            child: Text(
+                              status == 'ongoing' ? 'ONGOING' : 'UPCOMING',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: status == 'ongoing' ? Colors.red[700] : Colors.blue[700],
+                                letterSpacing: 0.5,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Icon(Icons.access_time, size: 14, color: Colors.grey[600]),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              timeDisplay,
+                              style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (location != null) ...[
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            Icon(Icons.location_on, size: 14, color: Colors.grey[600]),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                location,
+                                style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                const Icon(Icons.chevron_right, color: Colors.grey),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -931,9 +1427,10 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
                     child: Card(
                       child: InkWell(
                         onTap: () {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text("Events - Coming soon"),
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const MemberEventsScreen(),
                             ),
                           );
                         },
@@ -1175,13 +1672,18 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
-              onRefresh: _loadTodayPrayers,
+              onRefresh: () async {
+                await _loadTodayPrayers();
+                await _loadTodayEvents();
+              },
               child: SingleChildScrollView(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     _buildGreeting(),
                     _buildLiveNowCard(),
+                    _buildTodayEventsList(),
+                    const SizedBox(height: 12),
                     _buildTodayPrayersList(),
                     const SizedBox(height: 12),
                     _buildQuickActions(),
@@ -1190,64 +1692,6 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
                 ),
               ),
             ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _selectedIndex,
-        onDestinationSelected: (index) {
-          setState(() {
-            _selectedIndex = index;
-          });
-          if (index == 1) {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => const MemberScheduleScreen(),
-              ),
-            ).then((_) {
-              setState(() {
-                _selectedIndex = 0; // Reset to Home
-              });
-              _loadTodayPrayers(); // Refresh when returning
-            });
-          } else if (index == 2) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text("Events - Coming soon")),
-            );
-            setState(() {
-              _selectedIndex = 0; // Reset to Home
-            });
-          } else if (index == 3) {
-            // Requests - prayer requests screen
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text("Requests - Coming soon")),
-            );
-            setState(() {
-              _selectedIndex = 0; // Reset to Home
-            });
-          }
-        },
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.home_outlined),
-            selectedIcon: Icon(Icons.home),
-            label: 'Home',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.schedule_outlined),
-            selectedIcon: Icon(Icons.schedule),
-            label: 'Prayers',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.event_outlined),
-            selectedIcon: Icon(Icons.event),
-            label: 'Events',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.help_outline),
-            selectedIcon: Icon(Icons.help),
-            label: 'Requests',
-          ),
-        ],
-      ),
     );
   }
 }

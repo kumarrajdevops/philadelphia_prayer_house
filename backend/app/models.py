@@ -19,6 +19,7 @@ class User(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     prayers = relationship("Prayer", back_populates="creator")
+    event_series = relationship("EventSeries", back_populates="creator")
 
 
 class Prayer(Base):
@@ -66,3 +67,64 @@ class OTP(Base):
     __table_args__ = (
         Index("ix_otps_phone_email", "phone", "email"),
     )
+
+
+class EventSeries(Base):
+    """
+    Event Series (Template/Recurrence Definition)
+    Used only by pastors/backend. Members never see this directly.
+    """
+    __tablename__ = "event_series"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    event_type = Column(String, nullable=False)  # online, offline
+    location = Column(String, nullable=True)  # Required for offline
+    join_info = Column(String, nullable=True)  # Required for online
+    recurrence_type = Column(String, nullable=False, default="none")  # none, daily, weekly, monthly
+    recurrence_days = Column(String, nullable=True)  # For weekly: comma-separated days (0=Mon, 6=Sun)
+    recurrence_end_date = Column(Date, nullable=True)  # Optional end date
+    recurrence_count = Column(Integer, nullable=True)  # Optional: end after N occurrences
+    created_by = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    creator = relationship("User", back_populates="event_series")
+    occurrences = relationship("EventOccurrence", back_populates="series", cascade="all, delete-orphan")
+
+
+class EventOccurrence(Base):
+    """
+    Event Occurrences (Actual Events)
+    This is what everyone sees - concrete, time-bounded events.
+    Each occurrence has its own lifecycle and audit trail.
+    """
+    __tablename__ = "event_occurrences"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_series_id = Column(
+        Integer,
+        ForeignKey("event_series.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title = Column(String, nullable=False)  # Snapshot from series
+    description = Column(String, nullable=True)  # Snapshot from series
+    event_type = Column(String, nullable=False)  # Snapshot from series
+    location = Column(String, nullable=True)  # Snapshot from series
+    join_info = Column(String, nullable=True)  # Snapshot from series
+    start_datetime = Column(DateTime(timezone=True), nullable=False, index=True)
+    end_datetime = Column(DateTime(timezone=True), nullable=False, index=True)
+    status = Column(String, nullable=False, default="upcoming", index=True)  # upcoming, ongoing, completed
+    recurrence_type = Column(String, nullable=True)  # For label display: weekly/monthly/daily
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    series = relationship("EventSeries", back_populates="occurrences")
