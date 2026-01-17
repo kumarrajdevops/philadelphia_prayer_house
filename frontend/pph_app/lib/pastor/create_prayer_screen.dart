@@ -1,3 +1,4 @@
+import 'dart:async' show Timer;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../services/prayer_service.dart';
@@ -17,14 +18,22 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
   final _locationController = TextEditingController();
   final _joinInfoController = TextEditingController();
   
-  DateTime? _selectedDate;
+  DateTime? _startDate;
   TimeOfDay? _startTime;
+  DateTime? _endDate;
   TimeOfDay? _endTime;
-  
+  String _recurrenceType = 'none'; // 'none', 'daily', 'weekly', 'monthly'
+  List<int> _selectedWeekdays = []; // 0=Mon, 6=Sun
+  DateTime? _recurrenceEndDate;
+  int? _recurrenceCount;
+  String _recurrenceEndCondition = 'date'; // 'date' or 'count'
   String _prayerType = 'offline'; // 'offline' or 'online'
   
   bool _loading = false;
   bool _hasUnsavedChanges = false;
+  bool _showPreview = false;
+  List<Map<String, dynamic>> _previewOccurrences = [];
+  bool _loadingPreview = false;
   
   @override
   void initState() {
@@ -38,53 +47,56 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
   void _initializeDefaults() {
     final now = DateTime.now();
     
-    // Date: Default to today
-    _selectedDate = now;
-    
-    // Start Time: Next rounded hour
+    // Start: Default to today, next hour
+    _startDate = now;
     final nextHour = now.hour + 1;
     _startTime = TimeOfDay(hour: nextHour > 23 ? 0 : nextHour, minute: 0);
     
-    // End Time: Start time + 1 hour
+    // End: Same day, start time + 1 hour
+    _endDate = now;
     final endHour = _startTime!.hour + 1;
     _endTime = TimeOfDay(hour: endHour > 23 ? 0 : endHour, minute: 0);
+    
+    // Default to same weekday as start for weekly recurrence
+    if (_startDate != null) {
+      _selectedWeekdays = [_startDate!.weekday - 1]; // Convert to 0-based (Mon=0)
+    }
   }
 
   @override
   void dispose() {
+    _previewDebounceTimer?.cancel();
     _titleController.dispose();
     _locationController.dispose();
     _joinInfoController.dispose();
     super.dispose();
   }
 
-  Future<void> _selectDate() async {
+  Future<void> _selectStartDate() async {
     final DateTime now = DateTime.now();
-    final DateTime today = DateTime(now.year, now.month, now.day); // Today at midnight
+    final DateTime today = DateTime(now.year, now.month, now.day);
     final DateTime lastDate = now.add(const Duration(days: 365));
     
     final DateTime? picked = await showDatePicker(
       context: context,
-      initialDate: _selectedDate ?? today,
-      firstDate: today, // Only allow today or future dates
+      initialDate: _startDate ?? today,
+      firstDate: today,
       lastDate: lastDate,
-      helpText: "Select Prayer Date",
-      cancelText: "Cancel",
-      confirmText: "Select",
+      helpText: "Select Start Date",
     );
     
     if (picked != null) {
       setState(() {
-        _selectedDate = picked;
+        _startDate = picked;
         _hasUnsavedChanges = true;
-        // If date changed to past, ensure validation shows error
-      });
-      // Re-validate after date change to show inline errors
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          _formKey.currentState?.validate();
+        // Update default weekday for weekly recurrence
+        _selectedWeekdays = [picked.weekday - 1];
+        // If end date is before start date, adjust it to start date
+        if (_endDate != null && _endDate!.isBefore(picked)) {
+          _endDate = picked;
         }
       });
+      _updatePreview();
     }
   }
 
@@ -93,38 +105,52 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
       context: context,
       initialTime: _startTime ?? const TimeOfDay(hour: 9, minute: 0),
       helpText: "Select Start Time",
-      cancelText: "Cancel",
-      confirmText: "Select",
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: ColorScheme.light(
-              primary: Colors.blue[700]!,
-            ),
-          ),
-          child: child!,
-        );
-      },
     );
     
     if (picked != null) {
       setState(() {
         _startTime = picked;
-        // Auto-adjust end time if it's before or equal to start time
+        _hasUnsavedChanges = true;
+        // Auto-adjust end time if needed
         if (_endTime == null || 
             _endTime!.hour < picked.hour || 
             (_endTime!.hour == picked.hour && _endTime!.minute <= picked.minute)) {
           final endHour = picked.hour + 1;
           _endTime = TimeOfDay(hour: endHour > 23 ? 0 : endHour, minute: picked.minute);
         }
+      });
+      _updatePreview();
+    }
+  }
+
+  Future<void> _selectEndDate() async {
+    final DateTime now = DateTime.now();
+    final DateTime today = DateTime(now.year, now.month, now.day);
+    final DateTime firstDate = _startDate != null && _startDate!.isAfter(today) 
+        ? _startDate! 
+        : today;
+    final DateTime lastDate = now.add(const Duration(days: 365));
+    
+    // Ensure initialDate is not before firstDate
+    DateTime initialDate = _endDate ?? firstDate;
+    if (initialDate.isBefore(firstDate)) {
+      initialDate = firstDate;
+    }
+    
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: initialDate,
+      firstDate: firstDate,
+      lastDate: lastDate,
+      helpText: "Select End Date",
+    );
+    
+    if (picked != null) {
+      setState(() {
+        _endDate = picked;
         _hasUnsavedChanges = true;
       });
-      // Validate form after time change to show inline errors
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          _formKey.currentState?.validate();
-        }
-      });
+      _updatePreview();
     }
   }
 
@@ -135,18 +161,6 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
           ? TimeOfDay(hour: _startTime!.hour + 1, minute: _startTime!.minute)
           : const TimeOfDay(hour: 10, minute: 0)),
       helpText: "Select End Time",
-      cancelText: "Cancel",
-      confirmText: "Select",
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: ColorScheme.light(
-              primary: Colors.blue[700]!,
-            ),
-          ),
-          child: child!,
-        );
-      },
     );
     
     if (picked != null) {
@@ -154,115 +168,162 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
         _endTime = picked;
         _hasUnsavedChanges = true;
       });
-      // Validate form after time change to show inline errors
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          _formKey.currentState?.validate();
-        }
-      });
+      _updatePreview();
     }
   }
 
-  /// Truncate DateTime to minute precision (YYYY-MM-DD HH:MM)
-  DateTime _truncateToMinute(DateTime dateTime) {
+  Future<void> _selectRecurrenceEndDate() async {
+    final DateTime now = DateTime.now();
+    final DateTime today = DateTime(now.year, now.month, now.day);
+    final DateTime firstDate = _startDate != null && _startDate!.isAfter(today) 
+        ? _startDate! 
+        : today;
+    final DateTime lastDate = now.add(const Duration(days: 365));
+    
+    // Ensure initialDate is not before firstDate
+    DateTime initialDate = _recurrenceEndDate ?? firstDate;
+    if (initialDate.isBefore(firstDate)) {
+      initialDate = firstDate;
+    }
+    
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: initialDate,
+      firstDate: firstDate,
+      lastDate: lastDate,
+      helpText: "Recurrence End Date",
+    );
+    
+    if (picked != null) {
+      setState(() {
+        _recurrenceEndDate = picked;
+        _hasUnsavedChanges = true;
+      });
+      _updatePreview();
+    }
+  }
+
+  void _toggleWeekday(int day) {
+    setState(() {
+      if (_selectedWeekdays.contains(day)) {
+        _selectedWeekdays.remove(day);
+      } else {
+        _selectedWeekdays.add(day);
+      }
+      _selectedWeekdays.sort();
+      _hasUnsavedChanges = true;
+    });
+    _updatePreview();
+  }
+
+  Timer? _previewDebounceTimer;
+
+  Future<void> _updatePreview() async {
+    // Cancel any pending preview update
+    _previewDebounceTimer?.cancel();
+    
+    // Debounce preview updates to avoid too many API calls
+    _previewDebounceTimer = Timer(const Duration(milliseconds: 300), () async {
+      if (!mounted) return;
+      
+      if (_recurrenceType == 'none' || !_isFormValidForPreview()) {
+        if (mounted) {
+          setState(() {
+            _showPreview = false;
+            _previewOccurrences = [];
+          });
+        }
+        return;
+      }
+
+      if (mounted) {
+        setState(() {
+          _loadingPreview = true;
+        });
+      }
+
+      try {
+        // Use WidgetsBinding to ensure state is fully updated
+        await WidgetsBinding.instance.endOfFrame;
+        
+        final startDateTime = _getStartDateTime();
+        final endDateTime = _getEndDateTime();
+        
+        if (startDateTime == null || endDateTime == null) {
+          if (mounted) {
+            setState(() {
+              _loadingPreview = false;
+              _showPreview = false;
+            });
+          }
+          return;
+        }
+
+        final preview = await PrayerService.previewPrayerOccurrences(
+          title: _titleController.text.trim(),
+          prayerType: _prayerType,
+          location: _prayerType == 'offline' ? _locationController.text.trim() : null,
+          joinInfo: _prayerType == 'online' ? _joinInfoController.text.trim() : null,
+          startDatetime: startDateTime,
+          endDatetime: endDateTime,
+          recurrenceType: _recurrenceType,
+          recurrenceDays: _recurrenceType == 'weekly' && _selectedWeekdays.isNotEmpty
+              ? _selectedWeekdays.join(',')
+              : null,
+          recurrenceEndDate: _recurrenceEndCondition == 'date' && _recurrenceEndDate != null
+              ? _recurrenceEndDate!.toIso8601String().split('T')[0]
+              : null,
+          recurrenceCount: _recurrenceEndCondition == 'count' ? _recurrenceCount : null,
+        );
+
+        if (mounted) {
+          setState(() {
+            _previewOccurrences = preview;
+            _showPreview = preview.isNotEmpty;
+            _loadingPreview = false;
+          });
+        }
+      } catch (e) {
+        print("Preview error: $e");
+        if (mounted) {
+          setState(() {
+            _loadingPreview = false;
+            _showPreview = false;
+          });
+        }
+      }
+    });
+  }
+
+  bool _isFormValidForPreview() {
+    final hasTitle = _titleController.text.trim().isNotEmpty;
+    final hasDateAndTime = _startDate != null && _startTime != null && _endDate != null && _endTime != null;
+    final hasLocationOrJoinInfo = _prayerType == 'offline' 
+        ? _locationController.text.trim().isNotEmpty
+        : _joinInfoController.text.trim().isNotEmpty;
+    return hasTitle && hasDateAndTime && hasLocationOrJoinInfo;
+  }
+
+  DateTime? _getStartDateTime() {
+    if (_startDate == null || _startTime == null) return null;
     return DateTime(
-      dateTime.year,
-      dateTime.month,
-      dateTime.day,
-      dateTime.hour,
-      dateTime.minute,
+      _startDate!.year,
+      _startDate!.month,
+      _startDate!.day,
+      _startTime!.hour,
+      _startTime!.minute,
     );
   }
 
-  String? _validateDate() {
-    if (_selectedDate == null) {
-      return "Please select a date";
-    }
-    
-    final now = DateTime.now();
-    final nowTruncated = _truncateToMinute(now);
-    final today = DateTime(now.year, now.month, now.day);
-    final selectedDateOnly = DateTime(_selectedDate!.year, _selectedDate!.month, _selectedDate!.day);
-    
-    // Check if date is in the past (before today)
-    if (selectedDateOnly.isBefore(today)) {
-      return "You can't schedule a prayer in the past";
-    }
-    
-    // If date is today or in the past, check timestamps up to HH:MM precision
-    if (_startTime != null) {
-      final startDateTime = DateTime(
-        _selectedDate!.year,
-        _selectedDate!.month,
-        _selectedDate!.day,
-        _startTime!.hour,
-        _startTime!.minute,
-      );
-      final startTruncated = _truncateToMinute(startDateTime);
-      
-      // Check if start time has already passed (including current moment, compare up to HH:MM precision)
-      if (startTruncated.compareTo(nowTruncated) <= 0) {
-        return "You can't schedule a prayer in the past";
-      }
-    }
-    
-    // Also check end time if available
-    if (_endTime != null) {
-      final endDateTime = DateTime(
-        _selectedDate!.year,
-        _selectedDate!.month,
-        _selectedDate!.day,
-        _endTime!.hour,
-        _endTime!.minute,
-      );
-      final endTruncated = _truncateToMinute(endDateTime);
-      
-      // Check if end time has already passed (including current moment)
-      if (endTruncated.compareTo(nowTruncated) <= 0) {
-        return "The end time has already passed";
-      }
-    }
-    
-    return null;
-  }
-
-  String? _validateEndTime(TimeOfDay? endTime) {
-    if (endTime == null) {
-      return "Please select an end time";
-    }
-    if (_startTime == null) {
-      return null;
-    }
-    
-    // First check: end time must be after start time
-    final startMinutes = _startTime!.hour * 60 + _startTime!.minute;
-    final endMinutes = endTime.hour * 60 + endTime.minute;
-    
-    if (endMinutes <= startMinutes) {
-      return "End time should be after start time";
-    }
-    
-    // Second check: Compare full timestamp (date + time) up to HH:MM precision
-    if (_selectedDate != null) {
-      final now = DateTime.now();
-      final nowTruncated = _truncateToMinute(now);
-      
-      final endDateTime = DateTime(
-        _selectedDate!.year,
-        _selectedDate!.month,
-        _selectedDate!.day,
-        endTime.hour,
-        endTime.minute,
-      );
-      final endTruncated = _truncateToMinute(endDateTime);
-      
-      // Check if end time is in the past or at current moment
-      if (endTruncated.compareTo(nowTruncated) <= 0) {
-        return "The end time has already passed";
-      }
-    }
-    
-    return null;
+  DateTime? _getEndDateTime() {
+    if (_endDate == null || _endTime == null) return null;
+    return DateTime(
+      _endDate!.year,
+      _endDate!.month,
+      _endDate!.day,
+      _endTime!.hour,
+      _endTime!.minute,
+    );
   }
 
   Future<bool> _handleWillPop() async {
@@ -296,89 +357,56 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
       return;
     }
 
-    if (_selectedDate == null || _startTime == null || _endTime == null) {
-      return; // Form validation should catch this
-    }
+    final startDateTime = _getStartDateTime();
+    final endDateTime = _getEndDateTime();
 
-    // Final validation: Check if date is in the past
-    final dateError = _validateDate();
-    if (dateError != null) {
-      // Trigger validation to show inline error
-      setState(() {
-        _formKey.currentState?.validate();
-      });
+    if (startDateTime == null || endDateTime == null) {
       return;
     }
 
-    // Final validation: end time must be after start time and not in past
-    final endTimeError = _validateEndTime(_endTime);
-    if (endTimeError != null) {
-      // Error is already shown inline via form field validation
+    final now = DateTime.now();
+
+    // Validate that start datetime is not in the past
+    if (startDateTime.isBefore(now)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Cannot create prayers in the past. Start datetime must be in the future."), backgroundColor: Colors.red),
+      );
+      return;
+    }
+
+    // Validate that end datetime is not in the past
+    if (endDateTime.isBefore(now)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Cannot create prayers in the past. End datetime must be in the future."), backgroundColor: Colors.red),
+      );
+      return;
+    }
+
+    if (endDateTime.isBefore(startDateTime) || endDateTime.isAtSameMomentAs(startDateTime)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("End datetime must be after start datetime"), backgroundColor: Colors.red),
+      );
       return;
     }
 
     setState(() => _loading = true);
 
     try {
-      // Combine date and time for start/end
-      final startDateTime = DateTime(
-        _selectedDate!.year,
-        _selectedDate!.month,
-        _selectedDate!.day,
-        _startTime!.hour,
-        _startTime!.minute,
-      );
-
-      final endDateTime = DateTime(
-        _selectedDate!.year,
-        _selectedDate!.month,
-        _selectedDate!.day,
-        _endTime!.hour,
-        _endTime!.minute,
-      );
-
-      // Final safety check: Compare timestamps up to HH:MM precision (race condition protection)
-      final now = DateTime.now();
-      final nowTruncated = _truncateToMinute(now);
-      final startTruncated = _truncateToMinute(startDateTime);
-      final endTruncated = _truncateToMinute(endDateTime);
-      
-      // Check if start time is in the past or at current moment (compare up to HH:MM precision)
-      if (startTruncated.compareTo(nowTruncated) <= 0) {
-        setState(() => _loading = false);
-        // Trigger validation to show inline error
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            setState(() {
-              _formKey.currentState?.validate();
-            });
-          }
-        });
-        return;
-      }
-      
-      // Check if end time is in the past or at current moment (compare up to HH:MM precision)
-      if (endTruncated.compareTo(nowTruncated) <= 0) {
-        setState(() => _loading = false);
-        // Trigger validation to show inline error
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) {
-            setState(() {
-              _formKey.currentState?.validate();
-            });
-          }
-        });
-        return;
-      }
-
-      final result = await PrayerService.createPrayer(
+      final result = await PrayerService.createPrayerSeries(
         title: _titleController.text.trim(),
-        prayerDate: _selectedDate!,
-        startTime: startDateTime,
-        endTime: endDateTime,
         prayerType: _prayerType,
         location: _prayerType == 'offline' ? _locationController.text.trim() : null,
         joinInfo: _prayerType == 'online' ? _joinInfoController.text.trim() : null,
+        startDatetime: startDateTime,
+        endDatetime: endDateTime,
+        recurrenceType: _recurrenceType,
+        recurrenceDays: _recurrenceType == 'weekly' && _selectedWeekdays.isNotEmpty
+            ? _selectedWeekdays.join(',')
+            : null,
+        recurrenceEndDate: _recurrenceEndCondition == 'date' && _recurrenceEndDate != null
+            ? _recurrenceEndDate!.toIso8601String().split('T')[0]
+            : null,
+        recurrenceCount: _recurrenceEndCondition == 'count' ? _recurrenceCount : null,
       );
 
       if (!mounted) return;
@@ -386,14 +414,14 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
       setState(() => _loading = false);
 
       if (result != null) {
-        // Success - show confirmation with actions
-        _showSuccessConfirmation();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Prayer created successfully"), backgroundColor: Colors.green),
+        );
+        widget.onPrayerCreated?.call();
+        Navigator.pop(context);
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("Failed to create prayer. Please try again."),
-            backgroundColor: Colors.red,
-          ),
+          const SnackBar(content: Text("Failed to create prayer. Please try again."), backgroundColor: Colors.red),
         );
       }
     } catch (e) {
@@ -408,74 +436,11 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
     }
   }
 
-  void _showSuccessConfirmation() {
-    if (!mounted) return;
-    
-    // Show success snackbar
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: const Text("Prayer created successfully"),
-        backgroundColor: Colors.green,
-        duration: const Duration(seconds: 2),
-      ),
-    );
-
-    // Show dialog with next actions
-    if (!mounted) return;
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.check_circle, color: Colors.green, size: 28),
-            SizedBox(width: 8),
-            Expanded(child: Text("Prayer Created")),
-          ],
-        ),
-        content: const Text("Your prayer has been scheduled successfully."),
-        actions: [
-          TextButton(
-            onPressed: () {
-              if (!mounted) return;
-              Navigator.pop(dialogContext); // Close dialog
-              Navigator.pop(context); // Close create prayer screen
-              // Navigate to Events tab (index 1)
-              widget.onPrayerCreated?.call();
-            },
-            child: const Text("View Schedule"),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              if (!mounted) return;
-              Navigator.pop(dialogContext); // Close dialog
-              // Reset form for another prayer
-              setState(() {
-                _titleController.clear();
-                _locationController.clear();
-                _joinInfoController.clear();
-                _prayerType = 'offline';
-                _hasUnsavedChanges = false;
-              });
-              _initializeDefaults();
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blue[700],
-              foregroundColor: Colors.white,
-            ),
-            child: const Text("Create Another"),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return PopScope(
       canPop: !_hasUnsavedChanges,
       onPopInvokedWithResult: (bool didPop, dynamic result) async {
-        // If pop was prevented (didPop = false), show confirmation dialog
         if (!didPop) {
           if (!mounted) return;
           final shouldPop = await _handleWillPop();
@@ -499,20 +464,6 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
               }
             },
           ),
-          actions: [
-            if (_loading)
-              const Padding(
-                padding: EdgeInsets.all(16.0),
-                child: SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                  ),
-                ),
-              ),
-          ],
         ),
         body: Form(
           key: _formKey,
@@ -521,19 +472,7 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Subtext
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 24.0),
-                  child: Text(
-                    "Schedule a new prayer session",
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey[600],
-                    ),
-                  ),
-                ),
-
-                // Title Field
+                // Title
                 TextFormField(
                   controller: _titleController,
                   decoration: const InputDecoration(
@@ -549,7 +488,7 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
                     }
                     return null;
                   },
-                  textInputAction: TextInputAction.next,
+                  onChanged: (_) => _updatePreview(),
                 ),
 
                 const SizedBox(height: 24),
@@ -581,6 +520,7 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
                                   _prayerType = 'offline';
                                   _hasUnsavedChanges = true;
                                 });
+                                _updatePreview();
                               },
                               child: Container(
                                 padding: const EdgeInsets.symmetric(vertical: 12),
@@ -609,6 +549,7 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
                                   _prayerType = 'online';
                                   _hasUnsavedChanges = true;
                                 });
+                                _updatePreview();
                               },
                               child: Container(
                                 padding: const EdgeInsets.symmetric(vertical: 12),
@@ -655,6 +596,7 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
                       }
                       return null;
                     },
+                    onChanged: (_) => _updatePreview(),
                     textInputAction: TextInputAction.next,
                   ),
 
@@ -675,100 +617,283 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
                       }
                       return null;
                     },
+                    onChanged: (_) => _updatePreview(),
                     textInputAction: TextInputAction.next,
                   ),
 
                 const SizedBox(height: 24),
 
-                // Date Picker with validation
-                InkWell(
-                  onTap: _selectDate,
-                  child: InputDecorator(
-                    decoration: InputDecoration(
-                      labelText: "Date *",
-                      prefixIcon: const Icon(Icons.calendar_today),
-                      border: const OutlineInputBorder(),
-                      errorText: _validateDate(),
-                      errorMaxLines: 2,
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          _selectedDate != null
-                              ? DateFormat('EEEE, MMMM d, y').format(_selectedDate!)
-                              : "Select date",
-                          style: TextStyle(
-                            color: _selectedDate != null ? Colors.black87 : Colors.grey,
+                // Start Date & Time
+                Row(
+                  children: [
+                    Expanded(
+                      child: InkWell(
+                        onTap: _selectStartDate,
+                        child: InputDecorator(
+                          decoration: const InputDecoration(
+                            labelText: "Start Date *",
+                            prefixIcon: Icon(Icons.calendar_today),
+                            border: OutlineInputBorder(),
+                          ),
+                          child: Text(
+                            _startDate != null
+                                ? DateFormat('MMM d, y').format(_startDate!)
+                                : "Select date",
+                            style: TextStyle(color: _startDate != null ? Colors.black87 : Colors.grey),
                           ),
                         ),
-                        const Icon(Icons.arrow_drop_down, color: Colors.grey),
-                      ],
+                      ),
                     ),
-                  ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: InkWell(
+                        onTap: _selectStartTime,
+                        child: InputDecorator(
+                          decoration: const InputDecoration(
+                            labelText: "Start Time *",
+                            prefixIcon: Icon(Icons.access_time),
+                            border: OutlineInputBorder(),
+                          ),
+                          child: Text(
+                            _startTime != null
+                                ? _startTime!.format(context)
+                                : "Select time",
+                            style: TextStyle(color: _startTime != null ? Colors.black87 : Colors.grey),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 16),
+
+                // End Date & Time
+                Row(
+                  children: [
+                    Expanded(
+                      child: InkWell(
+                        onTap: _selectEndDate,
+                        child: InputDecorator(
+                          decoration: const InputDecoration(
+                            labelText: "End Date *",
+                            prefixIcon: Icon(Icons.calendar_today),
+                            border: OutlineInputBorder(),
+                          ),
+                          child: Text(
+                            _endDate != null
+                                ? DateFormat('MMM d, y').format(_endDate!)
+                                : "Select date",
+                            style: TextStyle(color: _endDate != null ? Colors.black87 : Colors.grey),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: InkWell(
+                        onTap: _selectEndTime,
+                        child: InputDecorator(
+                          decoration: const InputDecoration(
+                            labelText: "End Time *",
+                            prefixIcon: Icon(Icons.access_time),
+                            border: OutlineInputBorder(),
+                          ),
+                          child: Text(
+                            _endTime != null
+                                ? _endTime!.format(context)
+                                : "Select time",
+                            style: TextStyle(color: _endTime != null ? Colors.black87 : Colors.grey),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
 
                 const SizedBox(height: 24),
 
-                // Start Time Picker
-                InkWell(
-                  onTap: _selectStartTime,
-                  child: InputDecorator(
+                // Recurrence Toggle
+                Row(
+                  children: [
+                    Checkbox(
+                      value: _recurrenceType != 'none',
+                      onChanged: (value) {
+                        setState(() {
+                          _recurrenceType = value == true ? 'weekly' : 'none';
+                          _hasUnsavedChanges = true;
+                        });
+                        _updatePreview();
+                      },
+                    ),
+                    const Text("Recurring Prayer"),
+                  ],
+                ),
+
+                // Recurrence Options
+                if (_recurrenceType != 'none') ...[
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<String>(
+                    value: _recurrenceType,
                     decoration: const InputDecoration(
-                      labelText: "Start Time *",
-                      prefixIcon: Icon(Icons.access_time),
+                      labelText: "Recurrence Type *",
                       border: OutlineInputBorder(),
                     ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          _startTime != null
-                              ? _startTime!.format(context)
-                              : "Select start time",
-                          style: TextStyle(
-                            color: _startTime != null ? Colors.black87 : Colors.grey,
-                          ),
-                        ),
-                        const Icon(Icons.arrow_drop_down, color: Colors.grey),
-                      ],
-                    ),
+                    items: const [
+                      DropdownMenuItem(value: 'daily', child: Text('Daily')),
+                      DropdownMenuItem(value: 'weekly', child: Text('Weekly')),
+                      DropdownMenuItem(value: 'monthly', child: Text('Monthly')),
+                    ],
+                    onChanged: (value) {
+                      setState(() {
+                        _recurrenceType = value ?? 'weekly';
+                        _hasUnsavedChanges = true;
+                      });
+                      _updatePreview();
+                    },
                   ),
-                ),
 
-                const SizedBox(height: 24),
-
-                // End Time Picker with validation
-                InkWell(
-                  onTap: _selectEndTime,
-                  child: InputDecorator(
-                    decoration: InputDecoration(
-                      labelText: "End Time *",
-                      prefixIcon: const Icon(Icons.access_time),
-                      border: const OutlineInputBorder(),
-                      errorText: _endTime != null ? _validateEndTime(_endTime) : null,
-                      errorMaxLines: 2,
+                  if (_recurrenceType == 'weekly') ...[
+                    const SizedBox(height: 16),
+                    const Text("Select Days:", style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      children: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].asMap().entries.map((entry) {
+                        final dayIndex = entry.key;
+                        final dayLabel = entry.value;
+                        final isSelected = _selectedWeekdays.contains(dayIndex);
+                        return FilterChip(
+                          label: Text(dayLabel),
+                          selected: isSelected,
+                          onSelected: (_) => _toggleWeekday(dayIndex),
+                        );
+                      }).toList(),
                     ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          _endTime != null
-                              ? _endTime!.format(context)
-                              : "Select end time",
-                          style: TextStyle(
-                            color: _endTime != null ? Colors.black87 : Colors.grey,
-                          ),
+                  ],
+
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: RadioListTile<String>(
+                          title: const Text("End on date"),
+                          value: 'date',
+                          groupValue: _recurrenceEndCondition,
+                          onChanged: (value) {
+                            setState(() {
+                              _recurrenceEndCondition = value ?? 'date';
+                              _hasUnsavedChanges = true;
+                            });
+                            _updatePreview();
+                          },
                         ),
-                        const Icon(Icons.arrow_drop_down, color: Colors.grey),
-                      ],
-                    ),
+                      ),
+                      Expanded(
+                        child: RadioListTile<String>(
+                          title: const Text("End after N times"),
+                          value: 'count',
+                          groupValue: _recurrenceEndCondition,
+                          onChanged: (value) {
+                            setState(() {
+                              _recurrenceEndCondition = value ?? 'count';
+                              _hasUnsavedChanges = true;
+                            });
+                            _updatePreview();
+                          },
+                        ),
+                      ),
+                    ],
                   ),
-                ),
+
+                  if (_recurrenceEndCondition == 'date') ...[
+                    const SizedBox(height: 8),
+                    InkWell(
+                      onTap: _selectRecurrenceEndDate,
+                      child: InputDecorator(
+                        decoration: const InputDecoration(
+                          labelText: "Recurrence End Date",
+                          prefixIcon: Icon(Icons.calendar_today),
+                          border: OutlineInputBorder(),
+                        ),
+                        child: Text(
+                          _recurrenceEndDate != null
+                              ? DateFormat('MMM d, y').format(_recurrenceEndDate!)
+                              : "Select end date",
+                          style: TextStyle(color: _recurrenceEndDate != null ? Colors.black87 : Colors.grey),
+                        ),
+                      ),
+                    ),
+                  ],
+
+                  if (_recurrenceEndCondition == 'count') ...[
+                    const SizedBox(height: 8),
+                    TextFormField(
+                      decoration: const InputDecoration(
+                        labelText: "Number of Occurrences",
+                        prefixIcon: Icon(Icons.numbers),
+                        border: OutlineInputBorder(),
+                      ),
+                      keyboardType: TextInputType.number,
+                      onChanged: (value) {
+                        setState(() {
+                          _recurrenceCount = value.isEmpty ? null : int.tryParse(value);
+                          _hasUnsavedChanges = true;
+                        });
+                        _updatePreview();
+                      },
+                    ),
+                  ],
+                ],
+
+                // Preview Section
+                if (_showPreview && _previewOccurrences.isNotEmpty) ...[
+                  const SizedBox(height: 24),
+                  const Divider(),
+                  const SizedBox(height: 16),
+                  const Text(
+                    "Preview (Next 5 Occurrences):",
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 12),
+                  if (_loadingPreview)
+                    const Center(child: CircularProgressIndicator())
+                  else
+                    ..._previewOccurrences.map((occ) {
+                      String dateLabel = '';
+                      try {
+                        final startStr = occ['start_datetime'] as String?;
+                        final endStr = occ['end_datetime'] as String?;
+                        if (startStr != null && endStr != null) {
+                          final start = DateTime.parse(startStr).toLocal();
+                          final end = DateTime.parse(endStr).toLocal();
+                          if (start.year == end.year && start.month == end.month && start.day == end.day) {
+                            // Same day
+                            dateLabel = "${DateFormat('MMM d, y').format(start)} · ${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
+                          } else {
+                            // Multi-day
+                            dateLabel = "${DateFormat('MMM d').format(start)} - ${DateFormat('MMM d, y').format(end)} · ${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
+                          }
+                        } else {
+                          dateLabel = occ['date_label'] ?? '';
+                        }
+                      } catch (e) {
+                        dateLabel = occ['date_label'] ?? '';
+                      }
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          leading: const Icon(Icons.favorite, color: Colors.red),
+                          title: Text(dateLabel),
+                          dense: true,
+                        ),
+                      );
+                    }).toList(),
+                ],
 
                 const SizedBox(height: 32),
 
-                // Create Button (Primary CTA)
+                // Create Button
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
@@ -777,10 +902,7 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
                         ? const SizedBox(
                             width: 20,
                             height: 20,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                            ),
+                            child: CircularProgressIndicator(strokeWidth: 2, valueColor: AlwaysStoppedAnimation<Color>(Colors.white)),
                           )
                         : const Icon(Icons.check_circle, size: 24),
                     label: Text(
@@ -791,10 +913,7 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
                       backgroundColor: Colors.blue[700],
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(vertical: 16),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      elevation: 2,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
                   ),
                 ),
@@ -828,4 +947,3 @@ class _CreatePrayerScreenState extends State<CreatePrayerScreen> {
     );
   }
 }
-

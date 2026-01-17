@@ -80,31 +80,25 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
     }
 
     try {
-      final prayers = await PrayerService.getAllPrayers();
-      final now = DateTime.now();
-      final todayStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+      // Use occurrences API with "today" tab (already filters for today and excludes completed)
+      final todayList = await PrayerService.getPrayerOccurrences(tab: "today");
       
       if (mounted) {
-        final todayList = prayers.where((prayer) {
-          final prayerDate = prayer['prayer_date'] as String?;
-          if (prayerDate != todayStr) return false;
-          final status = (prayer['status'] as String? ?? 'upcoming').toLowerCase();
-          return status == 'inprogress' || status == 'upcoming';
-        }).toList()
-          ..sort((a, b) {
-            final timeA = a['start_time'] as String? ?? '';
-            final timeB = b['start_time'] as String? ?? '';
-            return timeA.compareTo(timeB);
-          });
+        // Sort by start_datetime (ascending - earliest first)
+        todayList.sort((a, b) {
+          final timeA = a['start_datetime'] as String? ?? '';
+          final timeB = b['start_datetime'] as String? ?? '';
+          return timeA.compareTo(timeB);
+        });
 
-        // Find all live prayers
+        // Find all live prayers (ongoing)
         final livePrayers = todayList.where((p) {
-          return (p['status'] as String? ?? 'upcoming').toLowerCase() == 'inprogress';
+          return (p['status'] as String? ?? 'upcoming').toLowerCase() == 'ongoing';
         }).toList()
           ..sort((a, b) {
-            // Sort by start time (earliest first)
-            final timeA = a['start_time'] as String? ?? '';
-            final timeB = b['start_time'] as String? ?? '';
+            // Sort by start_datetime (earliest first)
+            final timeA = a['start_datetime'] as String? ?? '';
+            final timeB = b['start_datetime'] as String? ?? '';
             return timeA.compareTo(timeB);
           });
 
@@ -508,17 +502,27 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
 
   Widget _buildSingleLivePrayerCard(Map<String, dynamic> prayer) {
     final title = prayer['title'] as String? ?? 'Prayer';
-    final startTime = prayer['start_time'] as String?;
-    final endTime = prayer['end_time'] as String?;
+    final startStr = prayer['start_datetime'] as String?;
+    final endStr = prayer['end_datetime'] as String?;
     final prayerType = (prayer['prayer_type'] as String? ?? 'offline').toLowerCase();
     final location = prayer['location'] as String?;
     final joinInfo = prayer['join_info'] as String?;
 
     String timeDisplay = "TBD";
-    if (startTime != null && endTime != null) {
-      timeDisplay = "${_formatTime(startTime)} - ${_formatTime(endTime)}";
-    } else if (startTime != null) {
-      timeDisplay = _formatTime(startTime);
+    if (startStr != null && endStr != null) {
+      try {
+        final start = DateTime.parse(startStr).toLocal();
+        final end = DateTime.parse(endStr).toLocal();
+        if (start.year == end.year && start.month == end.month && start.day == end.day) {
+          // Same day
+          timeDisplay = "${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
+        } else {
+          // Multi-day
+          timeDisplay = "${DateFormat('MMM d, h:mm a').format(start)} - ${DateFormat('MMM d, h:mm a').format(end)}";
+        }
+      } catch (e) {
+        timeDisplay = "$startStr - $endStr";
+      }
     }
 
     return Container(
@@ -1061,6 +1065,25 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
     final status = (event['status'] as String? ?? 'upcoming').toLowerCase();
     final location = event['location'] as String?;
 
+    // Determine icon color based on status
+    Color iconColor;
+    Color iconBgColor;
+    
+    if (status == 'ongoing') {
+      // Live Now - Red
+      iconColor = Colors.red[700]!;
+      iconBgColor = Colors.red[50]!;
+    } else if (status == 'completed') {
+      // Past - Grey
+      iconColor = Colors.grey[600]!;
+      iconBgColor = Colors.grey[200]!;
+    } else {
+      // Today (upcoming but happening today) - Orange
+      // Since these are "Today's" items, they're either ongoing or today
+      iconColor = Colors.orange[700]!;
+      iconBgColor = Colors.orange[50]!;
+    }
+
     String timeDisplay = "TBD";
     if (startStr != null && endStr != null) {
       try {
@@ -1102,10 +1125,10 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: Colors.purple[50],
+                    color: iconBgColor,
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: const Icon(Icons.event, color: Colors.purple, size: 24),
+                  child: Icon(Icons.event, color: iconColor, size: 24),
                 ),
                 const SizedBox(width: 16),
                 Expanded(
@@ -1189,16 +1212,46 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
 
   Widget _buildPrayerCard(Map<String, dynamic> prayer) {
     final title = prayer['title'] as String? ?? 'Prayer';
-    final startTime = prayer['start_time'] as String?;
-    final endTime = prayer['end_time'] as String?;
+    final startStr = prayer['start_datetime'] as String?;
+    final endStr = prayer['end_datetime'] as String?;
     final prayerType = (prayer['prayer_type'] as String? ?? 'offline').toLowerCase();
     final location = prayer['location'] as String?;
+    final status = (prayer['status'] as String? ?? 'upcoming').toLowerCase();
+
+    // Determine icon color based on status
+    Color iconColor;
+    Color iconBgColor;
+    
+    if (status == 'ongoing') {
+      // Live Now - Red
+      iconColor = Colors.red[700]!;
+      iconBgColor = Colors.red[50]!;
+    } else if (status == 'completed') {
+      // Past - Grey
+      iconColor = Colors.grey[600]!;
+      iconBgColor = Colors.grey[200]!;
+    } else {
+      // Today (upcoming but happening today) - Orange
+      // Since these are "Today's" items, they're either ongoing or today
+      iconColor = Colors.orange[700]!;
+      iconBgColor = Colors.orange[50]!;
+    }
 
     String timeDisplay = "TBD";
-    if (startTime != null && endTime != null) {
-      timeDisplay = "${_formatTime(startTime)} - ${_formatTime(endTime)}";
-    } else if (startTime != null) {
-      timeDisplay = _formatTime(startTime);
+    if (startStr != null && endStr != null) {
+      try {
+        final start = DateTime.parse(startStr).toLocal();
+        final end = DateTime.parse(endStr).toLocal();
+        if (start.year == end.year && start.month == end.month && start.day == end.day) {
+          // Same day
+          timeDisplay = "${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
+        } else {
+          // Multi-day
+          timeDisplay = "${DateFormat('MMM d, h:mm a').format(start)} - ${DateFormat('MMM d, h:mm a').format(end)}";
+        }
+      } catch (e) {
+        timeDisplay = "$startStr - $endStr";
+      }
     }
 
     return Container(
@@ -1225,10 +1278,10 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: Colors.blue[50],
+                    color: iconBgColor,
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: const Icon(Icons.favorite, color: Colors.blue, size: 24),
+                  child: Icon(Icons.favorite, color: iconColor, size: 24),
                 ),
                 const SizedBox(width: 16),
                 Expanded(

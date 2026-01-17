@@ -22,8 +22,9 @@ class _EditPrayerScreenState extends State<EditPrayerScreen> {
   final TextEditingController _locationController = TextEditingController();
   final TextEditingController _joinInfoController = TextEditingController();
   
-  DateTime? _selectedDate;
+  DateTime? _startDate;
   TimeOfDay? _startTime;
+  DateTime? _endDate;
   TimeOfDay? _endTime;
   
   String _prayerType = 'offline'; // 'offline' or 'online'
@@ -31,6 +32,8 @@ class _EditPrayerScreenState extends State<EditPrayerScreen> {
   bool _loading = false;
   bool _hasUnsavedChanges = false;
   int? _prayerId;
+  bool _isRecurring = false;
+  bool _applyToFuture = false;
 
   @override
   void initState() {
@@ -44,51 +47,51 @@ class _EditPrayerScreenState extends State<EditPrayerScreen> {
   }
 
   void _initializeFromPrayer() {
-    // Parse date from "YYYY-MM-DD" format
-    final prayerDateStr = widget.prayer['prayer_date'] as String?;
-    if (prayerDateStr != null) {
+    // Parse start datetime
+    final startStr = widget.prayer['start_datetime'] as String?;
+    if (startStr != null) {
       try {
-        final parts = prayerDateStr.split('-');
-        if (parts.length >= 3) {
-          final year = int.parse(parts[0]);
-          final month = int.parse(parts[1]);
-          final day = int.parse(parts[2]);
-          _selectedDate = DateTime(year, month, day);
-        }
+        final start = DateTime.parse(startStr).toLocal();
+        _startDate = DateTime(start.year, start.month, start.day);
+        _startTime = TimeOfDay(hour: start.hour, minute: start.minute);
       } catch (e) {
-        print("Error parsing date: $e");
+        print("Error parsing start datetime: $e");
       }
     }
     
-    // Parse start time from "HH:MM:SS" format
-    final startTimeStr = widget.prayer['start_time'] as String?;
-    if (startTimeStr != null) {
+    // Parse end datetime
+    final endStr = widget.prayer['end_datetime'] as String?;
+    if (endStr != null) {
       try {
-        final parts = startTimeStr.split(':');
-        if (parts.length >= 2) {
-          final hour = int.parse(parts[0]);
-          final minute = int.parse(parts[1]);
-          _startTime = TimeOfDay(hour: hour, minute: minute);
-        }
+        final end = DateTime.parse(endStr).toLocal();
+        _endDate = DateTime(end.year, end.month, end.day);
+        _endTime = TimeOfDay(hour: end.hour, minute: end.minute);
       } catch (e) {
-        print("Error parsing start time: $e");
+        print("Error parsing end datetime: $e");
       }
     }
     
-    // Parse end time from "HH:MM:SS" format
-    final endTimeStr = widget.prayer['end_time'] as String?;
-    if (endTimeStr != null) {
-      try {
-        final parts = endTimeStr.split(':');
-        if (parts.length >= 2) {
-          final hour = int.parse(parts[0]);
-          final minute = int.parse(parts[1]);
-          _endTime = TimeOfDay(hour: hour, minute: minute);
-        }
-      } catch (e) {
-        print("Error parsing end time: $e");
-      }
+    // Parse location
+    final location = widget.prayer['location'] as String?;
+    if (location != null && location.isNotEmpty) {
+      _locationController.text = location;
     }
+    
+    // Parse join info
+    final joinInfo = widget.prayer['join_info'] as String?;
+    if (joinInfo != null && joinInfo.isNotEmpty) {
+      _joinInfoController.text = joinInfo;
+    }
+    
+    // Parse prayer type
+    final prayerType = widget.prayer['prayer_type'] as String?;
+    if (prayerType != null) {
+      _prayerType = prayerType.toLowerCase();
+    }
+    
+    // Check if this is part of a recurring series
+    final recurrenceType = widget.prayer['recurrence_type'] as String?;
+    _isRecurring = recurrenceType != null && recurrenceType.isNotEmpty && recurrenceType.toLowerCase() != 'none';
     
     _hasUnsavedChanges = false; // Reset after initializing
   }
@@ -101,27 +104,31 @@ class _EditPrayerScreenState extends State<EditPrayerScreen> {
     super.dispose();
   }
 
-  Future<void> _selectDate() async {
+  Future<void> _selectStartDate() async {
     final DateTime now = DateTime.now();
-    final DateTime today = DateTime(now.year, now.month, now.day); // Today at midnight
+    final DateTime today = DateTime(now.year, now.month, now.day);
     final DateTime lastDate = now.add(const Duration(days: 365));
     
     final DateTime? picked = await showDatePicker(
       context: context,
-      initialDate: _selectedDate ?? today,
-      firstDate: today, // Only allow today or future dates
+      initialDate: _startDate ?? today,
+      firstDate: today,
       lastDate: lastDate,
-      helpText: "Select Prayer Date",
+      helpText: "Select Start Date",
       cancelText: "Cancel",
       confirmText: "Select",
     );
     
     if (picked != null) {
       setState(() {
-        _selectedDate = picked;
+        _startDate = picked;
         _hasUnsavedChanges = true;
+        // If end date is before start date, adjust it to start date
+        if (_endDate != null && _endDate!.isBefore(picked)) {
+          _endDate = picked;
+        }
       });
-      // Re-validate after date change to show inline errors
+      // Re-validate after date change
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
           _formKey.currentState?.validate();
@@ -161,7 +168,45 @@ class _EditPrayerScreenState extends State<EditPrayerScreen> {
         }
         _hasUnsavedChanges = true;
       });
-      // Validate form after time change to show inline errors
+      // Validate form after time change
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _formKey.currentState?.validate();
+        }
+      });
+    }
+  }
+
+  Future<void> _selectEndDate() async {
+    final DateTime now = DateTime.now();
+    final DateTime today = DateTime(now.year, now.month, now.day);
+    final DateTime firstDate = _startDate != null && _startDate!.isAfter(today) 
+        ? _startDate! 
+        : today;
+    final DateTime lastDate = now.add(const Duration(days: 365));
+    
+    // Ensure initialDate is not before firstDate
+    DateTime initialDate = _endDate ?? firstDate;
+    if (initialDate.isBefore(firstDate)) {
+      initialDate = firstDate;
+    }
+    
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: initialDate,
+      firstDate: firstDate,
+      lastDate: lastDate,
+      helpText: "Select End Date",
+      cancelText: "Cancel",
+      confirmText: "Select",
+    );
+    
+    if (picked != null) {
+      setState(() {
+        _endDate = picked;
+        _hasUnsavedChanges = true;
+      });
+      // Re-validate after date change
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
           _formKey.currentState?.validate();
@@ -196,7 +241,7 @@ class _EditPrayerScreenState extends State<EditPrayerScreen> {
         _endTime = picked;
         _hasUnsavedChanges = true;
       });
-      // Validate form after time change to show inline errors
+      // Validate form after time change
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
           _formKey.currentState?.validate();
@@ -216,92 +261,68 @@ class _EditPrayerScreenState extends State<EditPrayerScreen> {
     );
   }
 
-  String? _validateDate() {
-    if (_selectedDate == null) {
-      return "Please select a date";
+  String? _validateStartDateTime() {
+    if (_startDate == null || _startTime == null) {
+      return "Please select start date and time";
     }
     
     final now = DateTime.now();
     final nowTruncated = _truncateToMinute(now);
-    final today = DateTime(now.year, now.month, now.day);
-    final selectedDateOnly = DateTime(_selectedDate!.year, _selectedDate!.month, _selectedDate!.day);
     
-    // Check if date is in the past (before today)
-    if (selectedDateOnly.isBefore(today)) {
-      return "You can't schedule a prayer in the past";
-    }
+    final startDateTime = DateTime(
+      _startDate!.year,
+      _startDate!.month,
+      _startDate!.day,
+      _startTime!.hour,
+      _startTime!.minute,
+    );
+    final startTruncated = _truncateToMinute(startDateTime);
     
-    // If date is today or in the past, check timestamps up to HH:MM precision
-    if (_startTime != null) {
-      final startDateTime = DateTime(
-        _selectedDate!.year,
-        _selectedDate!.month,
-        _selectedDate!.day,
-        _startTime!.hour,
-        _startTime!.minute,
-      );
-      final startTruncated = _truncateToMinute(startDateTime);
-      
-      // Check if start time has already passed (including current moment, compare up to HH:MM precision)
-      if (startTruncated.compareTo(nowTruncated) <= 0) {
-        return "You can't schedule a prayer in the past";
-      }
-    }
-    
-    // Also check end time if available
-    if (_endTime != null) {
-      final endDateTime = DateTime(
-        _selectedDate!.year,
-        _selectedDate!.month,
-        _selectedDate!.day,
-        _endTime!.hour,
-        _endTime!.minute,
-      );
-      final endTruncated = _truncateToMinute(endDateTime);
-      
-      // Check if end time has already passed (including current moment)
-      if (endTruncated.compareTo(nowTruncated) <= 0) {
-        return "The end time has already passed";
-      }
+    // Check if start time is in the past
+    if (startTruncated.compareTo(nowTruncated) <= 0) {
+      return "You can't edit a prayer that has already started";
     }
     
     return null;
   }
 
-  String? _validateEndTime(TimeOfDay? endTime) {
-    if (endTime == null) {
-      return "Please select an end time";
+  String? _validateEndDateTime() {
+    if (_endDate == null || _endTime == null) {
+      return "Please select end date and time";
     }
-    if (_startTime == null) {
+    
+    if (_startDate == null || _startTime == null) {
       return null;
     }
     
-    // First check: end time must be after start time
-    final startMinutes = _startTime!.hour * 60 + _startTime!.minute;
-    final endMinutes = endTime.hour * 60 + endTime.minute;
+    // First check: end must be after start
+    final startDateTime = DateTime(
+      _startDate!.year,
+      _startDate!.month,
+      _startDate!.day,
+      _startTime!.hour,
+      _startTime!.minute,
+    );
     
-    if (endMinutes <= startMinutes) {
-      return "End time should be after start time";
+    final endDateTime = DateTime(
+      _endDate!.year,
+      _endDate!.month,
+      _endDate!.day,
+      _endTime!.hour,
+      _endTime!.minute,
+    );
+    
+    if (endDateTime.isBefore(startDateTime) || endDateTime.isAtSameMomentAs(startDateTime)) {
+      return "End date/time must be after start date/time";
     }
     
-    // Second check: Compare full timestamp (date + time) up to HH:MM precision
-    if (_selectedDate != null) {
-      final now = DateTime.now();
-      final nowTruncated = _truncateToMinute(now);
-      
-      final endDateTime = DateTime(
-        _selectedDate!.year,
-        _selectedDate!.month,
-        _selectedDate!.day,
-        endTime.hour,
-        endTime.minute,
-      );
-      final endTruncated = _truncateToMinute(endDateTime);
-      
-      // Check if end time is in the past or at current moment
-      if (endTruncated.compareTo(nowTruncated) <= 0) {
-        return "The end time has already passed";
-      }
+    // Second check: end time must not be in the past
+    final now = DateTime.now();
+    final nowTruncated = _truncateToMinute(now);
+    final endTruncated = _truncateToMinute(endDateTime);
+    
+    if (endTruncated.compareTo(nowTruncated) <= 0) {
+      return "End date/time cannot be in the past";
     }
     
     return null;
@@ -345,25 +366,53 @@ class _EditPrayerScreenState extends State<EditPrayerScreen> {
       return;
     }
 
-    if (_selectedDate == null || _startTime == null || _endTime == null) {
+    if (_startDate == null || _startTime == null || _endDate == null || _endTime == null) {
       return; // Form validation should catch this
     }
 
-    // Final validation: Check if date is in the past
-    final dateError = _validateDate();
-    if (dateError != null) {
-      // Trigger validation to show inline error
+    // Final validation: Check if start datetime is in the past
+    final startError = _validateStartDateTime();
+    if (startError != null) {
       setState(() {
         _formKey.currentState?.validate();
       });
       return;
     }
 
-    // Final validation: end time must be after start time and not in past
-    final endTimeError = _validateEndTime(_endTime);
-    if (endTimeError != null) {
-      // Error is already shown inline via form field validation
+    // Final validation: Check end datetime
+    final endError = _validateEndDateTime();
+    if (endError != null) {
+      setState(() {
+        _formKey.currentState?.validate();
+      });
       return;
+    }
+
+    // Show confirmation dialog for recurring prayers
+    if (_isRecurring) {
+      final applyToFuture = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text("Apply Changes To"),
+          content: const Text("This is a recurring prayer. Do you want to apply changes to this occurrence only, or this and all future occurrences?"),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text("This Occurrence Only"),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text("This and Future"),
+            ),
+          ],
+        ),
+      );
+      
+      if (applyToFuture == null) {
+        return; // User cancelled
+      }
+      
+      _applyToFuture = applyToFuture;
     }
 
     setState(() => _loading = true);
@@ -371,31 +420,30 @@ class _EditPrayerScreenState extends State<EditPrayerScreen> {
     try {
       // Combine date and time for start/end
       final startDateTime = DateTime(
-        _selectedDate!.year,
-        _selectedDate!.month,
-        _selectedDate!.day,
+        _startDate!.year,
+        _startDate!.month,
+        _startDate!.day,
         _startTime!.hour,
         _startTime!.minute,
       );
 
       final endDateTime = DateTime(
-        _selectedDate!.year,
-        _selectedDate!.month,
-        _selectedDate!.day,
+        _endDate!.year,
+        _endDate!.month,
+        _endDate!.day,
         _endTime!.hour,
         _endTime!.minute,
       );
 
-      // Final safety check: Compare timestamps up to HH:MM precision (race condition protection)
+      // Final safety check: Compare timestamps up to minute precision
       final now = DateTime.now();
       final nowTruncated = _truncateToMinute(now);
       final startTruncated = _truncateToMinute(startDateTime);
       final endTruncated = _truncateToMinute(endDateTime);
       
-      // Check if start time is in the past or at current moment (compare up to HH:MM precision)
+      // Check if start time is in the past
       if (startTruncated.compareTo(nowTruncated) <= 0) {
         setState(() => _loading = false);
-        // Trigger validation to show inline error
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
             setState(() {
@@ -406,10 +454,9 @@ class _EditPrayerScreenState extends State<EditPrayerScreen> {
         return;
       }
       
-      // Check if end time is in the past or at current moment (compare up to HH:MM precision)
+      // Check if end time is in the past
       if (endTruncated.compareTo(nowTruncated) <= 0) {
         setState(() => _loading = false);
-        // Trigger validation to show inline error
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) {
             setState(() {
@@ -420,15 +467,15 @@ class _EditPrayerScreenState extends State<EditPrayerScreen> {
         return;
       }
 
-      final result = await PrayerService.updatePrayer(
-        prayerId: _prayerId!,
+      final result = await PrayerService.updatePrayerOccurrence(
+        occurrenceId: _prayerId!,
         title: _titleController.text.trim(),
-        prayerDate: _selectedDate!,
-        startTime: startDateTime,
-        endTime: endDateTime,
         prayerType: _prayerType,
         location: _prayerType == 'offline' ? _locationController.text.trim() : null,
         joinInfo: _prayerType == 'online' ? _joinInfoController.text.trim() : null,
+        startDatetime: startDateTime,
+        endDatetime: endDateTime,
+        applyToFuture: _applyToFuture,
       );
 
       if (!mounted) return;
@@ -681,26 +728,26 @@ class _EditPrayerScreenState extends State<EditPrayerScreen> {
 
                 const SizedBox(height: 24),
 
-                // Date Picker with validation
+                // Start Date Picker with validation
                 InkWell(
-                  onTap: _selectDate,
+                  onTap: _selectStartDate,
                   child: InputDecorator(
                     decoration: InputDecoration(
-                      labelText: "Date *",
+                      labelText: "Start Date *",
                       prefixIcon: const Icon(Icons.calendar_today),
                       border: const OutlineInputBorder(),
-                      errorText: _validateDate(),
+                      errorText: _startDate != null && _startTime != null ? _validateStartDateTime() : null,
                       errorMaxLines: 2,
                     ),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Text(
-                          _selectedDate != null
-                              ? DateFormat('EEEE, MMMM d, y').format(_selectedDate!)
-                              : "Select date",
+                          _startDate != null
+                              ? DateFormat('EEEE, MMMM d, y').format(_startDate!)
+                              : "Select start date",
                           style: TextStyle(
-                            color: _selectedDate != null ? Colors.black87 : Colors.grey,
+                            color: _startDate != null ? Colors.black87 : Colors.grey,
                           ),
                         ),
                         const Icon(Icons.arrow_drop_down, color: Colors.grey),
@@ -739,6 +786,34 @@ class _EditPrayerScreenState extends State<EditPrayerScreen> {
 
                 const SizedBox(height: 24),
 
+                // End Date Picker
+                InkWell(
+                  onTap: _selectEndDate,
+                  child: InputDecorator(
+                    decoration: const InputDecoration(
+                      labelText: "End Date *",
+                      prefixIcon: Icon(Icons.calendar_today),
+                      border: OutlineInputBorder(),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          _endDate != null
+                              ? DateFormat('EEEE, MMMM d, y').format(_endDate!)
+                              : "Select end date",
+                          style: TextStyle(
+                            color: _endDate != null ? Colors.black87 : Colors.grey,
+                          ),
+                        ),
+                        const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                      ],
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 24),
+
                 // End Time Picker with validation
                 InkWell(
                   onTap: _selectEndTime,
@@ -747,7 +822,7 @@ class _EditPrayerScreenState extends State<EditPrayerScreen> {
                       labelText: "End Time *",
                       prefixIcon: const Icon(Icons.access_time),
                       border: const OutlineInputBorder(),
-                      errorText: _endTime != null ? _validateEndTime(_endTime) : null,
+                      errorText: _endDate != null && _endTime != null ? _validateEndDateTime() : null,
                       errorMaxLines: 2,
                     ),
                     child: Row(

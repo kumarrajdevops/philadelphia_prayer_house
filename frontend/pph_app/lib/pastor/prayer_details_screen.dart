@@ -62,7 +62,7 @@ class _PrayerDetailsScreenState extends State<PrayerDetailsScreen> {
     Color textColor;
 
     switch (status.toLowerCase()) {
-      case 'inprogress':
+      case 'ongoing':
         displayText = 'LIVE NOW';
         backgroundColor = Colors.red[50]!;
         textColor = Colors.red[700]!;
@@ -80,7 +80,7 @@ class _PrayerDetailsScreenState extends State<PrayerDetailsScreen> {
         break;
     }
 
-    if (status.toLowerCase() == 'inprogress') {
+    if (status.toLowerCase() == 'ongoing') {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
@@ -344,26 +344,72 @@ class _PrayerDetailsScreenState extends State<PrayerDetailsScreen> {
     }
   }
 
+  String _computeStatus(String? startStr, String? endStr) {
+    if (startStr == null || endStr == null) {
+      return 'upcoming';
+    }
+    
+    try {
+      final now = DateTime.now().toUtc();
+      final start = DateTime.parse(startStr).toUtc();
+      final end = DateTime.parse(endStr).toUtc();
+      
+      if (now.isBefore(start)) {
+        return 'upcoming';
+      } else if (now.isBefore(end)) {
+        return 'ongoing';
+      } else {
+        return 'completed';
+      }
+    } catch (e) {
+      // Fallback to status from prayer object if parsing fails
+      return (widget.prayer['status'] as String? ?? 'upcoming').toLowerCase();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final title = widget.prayer['title'] as String? ?? 'Prayer';
-    final prayerDate = widget.prayer['prayer_date'] as String?;
-    final startTime = widget.prayer['start_time'] as String?;
-    final endTime = widget.prayer['end_time'] as String?;
-    final status = (widget.prayer['status'] as String? ?? 'upcoming').toLowerCase();
+    final startStr = widget.prayer['start_datetime'] as String?;
+    final endStr = widget.prayer['end_datetime'] as String?;
+    // Compute status dynamically based on current time
+    final status = _computeStatus(startStr, endStr);
     final prayerType = (widget.prayer['prayer_type'] as String? ?? 'offline').toLowerCase();
     final location = widget.prayer['location'] as String?;
     final joinInfo = widget.prayer['join_info'] as String?;
     final canEdit = status == 'upcoming';
 
+    String dateDisplay = "TBD";
     String timeDisplay = "TBD";
-    if (startTime != null && endTime != null) {
-      timeDisplay = "${_formatTime(startTime)} - ${_formatTime(endTime)}";
-    } else if (startTime != null) {
-      timeDisplay = _formatTime(startTime);
+    if (startStr != null && endStr != null) {
+      try {
+        final start = DateTime.parse(startStr).toLocal();
+        final end = DateTime.parse(endStr).toLocal();
+        if (start.year == end.year && start.month == end.month && start.day == end.day) {
+          // Same day
+          dateDisplay = DateFormat('MMM d, y').format(start);
+          timeDisplay = "${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
+        } else {
+          // Multi-day
+          dateDisplay = "${DateFormat('MMM d').format(start)} - ${DateFormat('MMM d, y').format(end)}";
+          timeDisplay = "${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
+        }
+      } catch (e) {
+        dateDisplay = "TBD";
+        timeDisplay = "$startStr - $endStr";
+      }
+    } else if (startStr != null) {
+      try {
+        final start = DateTime.parse(startStr).toLocal();
+        dateDisplay = DateFormat('MMM d, y').format(start);
+        timeDisplay = DateFormat('h:mm a').format(start);
+      } catch (e) {
+        dateDisplay = "TBD";
+        timeDisplay = startStr;
+      }
     }
 
-    final isLive = status == 'inprogress';
+    final isLive = status == 'ongoing';
 
     return Scaffold(
       appBar: AppBar(
@@ -472,7 +518,7 @@ class _PrayerDetailsScreenState extends State<PrayerDetailsScreen> {
                         _buildInfoRow(
                           Icons.calendar_today,
                           "Date",
-                          _formatDate(prayerDate),
+                          dateDisplay,
                         ),
                         const Divider(),
 

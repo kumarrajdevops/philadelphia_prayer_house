@@ -11,7 +11,7 @@ class MemberScheduleScreen extends StatefulWidget {
   State<MemberScheduleScreen> createState() => _MemberScheduleScreenState();
 }
 
-class _MemberScheduleScreenState extends State<MemberScheduleScreen> with WidgetsBindingObserver {
+class _MemberScheduleScreenState extends State<MemberScheduleScreen> with TickerProviderStateMixin, WidgetsBindingObserver {
   List<Map<String, dynamic>> _allPrayers = [];
   bool _loading = true;
   int _selectedTabIndex = 0;
@@ -22,7 +22,7 @@ class _MemberScheduleScreenState extends State<MemberScheduleScreen> with Widget
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _tabController = TabController(length: 3, vsync: Navigator.of(context));
+    _tabController = TabController(length: 3, vsync: this);
     _loadPrayers();
     _startAutoRefresh();
   }
@@ -61,7 +61,8 @@ class _MemberScheduleScreenState extends State<MemberScheduleScreen> with Widget
     }
 
     try {
-      final prayers = await PrayerService.getAllPrayers();
+      // Use occurrences API (loads all occurrences, we filter by tab client-side)
+      final prayers = await PrayerService.getPrayerOccurrences();
       if (mounted) {
         setState(() {
           _allPrayers = prayers;
@@ -85,110 +86,137 @@ class _MemberScheduleScreenState extends State<MemberScheduleScreen> with Widget
 
   List<Map<String, dynamic>> _getTodayPrayers() {
     final now = DateTime.now();
-    final todayStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+    final todayStart = DateTime(now.year, now.month, now.day);
+    final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);
     
     return _allPrayers.where((prayer) {
-      final prayerDate = prayer['prayer_date'] as String?;
-      if (prayerDate != todayStr) return false;
-      
+      final startStr = prayer['start_datetime'] as String?;
+      final endStr = prayer['end_datetime'] as String?;
       final status = (prayer['status'] as String? ?? 'upcoming').toLowerCase();
-      return status == 'inprogress' || status == 'upcoming';
+      
+      if (startStr == null || endStr == null) return false;
+      
+      // Exclude completed prayers from Today tab
+      if (status == 'completed') return false;
+      
+      try {
+        final start = DateTime.parse(startStr).toLocal();
+        final end = DateTime.parse(endStr).toLocal();
+        
+        // Show if ongoing OR starts today (but not completed)
+        return (start.isBefore(todayEnd) && end.isAfter(todayStart)) ||
+               (start.isAfter(todayStart) && start.isBefore(todayEnd));
+      } catch (e) {
+        return false;
+      }
     }).toList()
       ..sort((a, b) {
-        final timeA = a['start_time'] as String? ?? '';
-        final timeB = b['start_time'] as String? ?? '';
+        final timeA = a['start_datetime'] as String? ?? '';
+        final timeB = b['start_datetime'] as String? ?? '';
         return timeA.compareTo(timeB);
       });
   }
 
   List<Map<String, dynamic>> _getUpcomingPrayers() {
     final now = DateTime.now();
-    final todayStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+    final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);
     
     return _allPrayers.where((prayer) {
-      final prayerDate = prayer['prayer_date'] as String?;
+      final startStr = prayer['start_datetime'] as String?;
       final status = (prayer['status'] as String? ?? 'upcoming').toLowerCase();
       
-      // Only show upcoming prayers from today onwards
-      return prayerDate != null && 
-             (prayerDate.compareTo(todayStr) > 0 || 
-              (prayerDate == todayStr && status == 'upcoming')) &&
-             status != 'completed';
+      if (startStr == null) return false;
+      
+      try {
+        final start = DateTime.parse(startStr).toLocal();
+        // Show future prayers that start after today (tomorrow or later)
+        // Exclude today's prayers (they should be in Today tab)
+        return start.isAfter(todayEnd) && status != 'completed';
+      } catch (e) {
+        return false;
+      }
     }).toList()
       ..sort((a, b) {
-        final dateA = a['prayer_date'] as String? ?? '';
-        final dateB = b['prayer_date'] as String? ?? '';
-        if (dateA != dateB) return dateA.compareTo(dateB);
-        final timeA = a['start_time'] as String? ?? '';
-        final timeB = b['start_time'] as String? ?? '';
+        final timeA = a['start_datetime'] as String? ?? '';
+        final timeB = b['start_datetime'] as String? ?? '';
         return timeA.compareTo(timeB);
+      });
+  }
+
+  List<Map<String, dynamic>> _getOngoingPrayers() {
+    return _allPrayers.where((prayer) {
+      final status = (prayer['status'] as String? ?? '').toLowerCase();
+      return status == 'ongoing';
+    }).toList()
+      ..sort((a, b) {
+        final startA = a['start_datetime'] as String? ?? '';
+        final startB = b['start_datetime'] as String? ?? '';
+        return startA.compareTo(startB);
       });
   }
 
   List<Map<String, dynamic>> _getPastPrayers() {
     final now = DateTime.now();
-    final todayStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
     
     return _allPrayers.where((prayer) {
-      final prayerDate = prayer['prayer_date'] as String?;
+      final endStr = prayer['end_datetime'] as String?;
       final status = (prayer['status'] as String? ?? 'upcoming').toLowerCase();
       
-      return prayerDate != null && 
-             (prayerDate.compareTo(todayStr) < 0 || 
-              (prayerDate == todayStr && status == 'completed'));
+      if (endStr == null) return false;
+      
+      try {
+        final end = DateTime.parse(endStr).toLocal();
+        // Show if end_datetime is in the past (regardless of status, as fallback)
+        // OR if status is explicitly 'completed'
+        return end.isBefore(now) || status == 'completed';
+      } catch (e) {
+        return false;
+      }
     }).toList()
       ..sort((a, b) {
-        final dateA = a['prayer_date'] as String? ?? '';
-        final dateB = b['prayer_date'] as String? ?? '';
-        if (dateA != dateB) return dateB.compareTo(dateA); // Reverse order for past
-        final timeA = a['start_time'] as String? ?? '';
-        final timeB = b['start_time'] as String? ?? '';
-        return timeB.compareTo(timeA);
+        final timeA = a['start_datetime'] as String? ?? '';
+        final timeB = b['start_datetime'] as String? ?? '';
+        return timeB.compareTo(timeA); // Reverse order for past
       });
   }
 
-  String _formatTime(String? timeStr) {
-    if (timeStr == null || timeStr.isEmpty) return "TBD";
+  String _formatDate(String? startStr, String? endStr) {
+    if (startStr == null || endStr == null) return "TBD";
     try {
-      final parts = timeStr.split(':');
-      if (parts.length >= 2) {
-        final hour = int.parse(parts[0]);
-        final minute = int.parse(parts[1]);
-        final time = TimeOfDay(hour: hour, minute: minute);
-        return time.format(context);
-      }
-    } catch (e) {
-      print("Error parsing time: $e");
-    }
-    return timeStr;
-  }
-
-  String _formatDate(String? dateStr) {
-    if (dateStr == null || dateStr.isEmpty) return "TBD";
-    try {
-      final parts = dateStr.split('-');
-      if (parts.length >= 3) {
-        final year = int.parse(parts[0]);
-        final month = int.parse(parts[1]);
-        final day = int.parse(parts[2]);
-        final date = DateTime(year, month, day);
-        final now = DateTime.now();
-        final today = DateTime(now.year, now.month, now.day);
-        final tomorrow = today.add(const Duration(days: 1));
-        final prayerDate = DateTime(year, month, day);
-        
-        if (prayerDate == today) {
+      final start = DateTime.parse(startStr).toLocal();
+      final end = DateTime.parse(endStr).toLocal();
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      final tomorrow = today.add(const Duration(days: 1));
+      
+      if (start.year == end.year && start.month == end.month && start.day == end.day) {
+        // Same day
+        final dateOnly = DateTime(start.year, start.month, start.day);
+        if (dateOnly == today) {
           return "Today";
-        } else if (prayerDate == tomorrow) {
+        } else if (dateOnly == tomorrow) {
           return "Tomorrow";
         } else {
-          return DateFormat('MMM d, y').format(date);
+          return DateFormat('MMM d, y').format(start);
         }
+      } else {
+        // Multi-day
+        return "${DateFormat('MMM d').format(start)} - ${DateFormat('MMM d, y').format(end)}";
       }
     } catch (e) {
-      print("Error parsing date: $e");
+      return "TBD";
     }
-    return dateStr;
+  }
+
+  String _formatTime(String? startStr, String? endStr) {
+    if (startStr == null || endStr == null) return "TBD";
+    try {
+      final start = DateTime.parse(startStr).toLocal();
+      final end = DateTime.parse(endStr).toLocal();
+      return "${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
+    } catch (e) {
+      return "TBD";
+    }
   }
 
   Widget _buildStatusTag(String status) {
@@ -197,7 +225,7 @@ class _MemberScheduleScreenState extends State<MemberScheduleScreen> with Widget
     Color textColor;
 
     switch (status.toLowerCase()) {
-      case 'inprogress':
+      case 'ongoing':
         displayText = 'LIVE NOW';
         backgroundColor = Colors.red[50]!;
         textColor = Colors.red[700]!;
@@ -215,7 +243,7 @@ class _MemberScheduleScreenState extends State<MemberScheduleScreen> with Widget
         break;
     }
 
-    if (status.toLowerCase() == 'inprogress') {
+    if (status.toLowerCase() == 'ongoing') {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
@@ -277,32 +305,66 @@ class _MemberScheduleScreenState extends State<MemberScheduleScreen> with Widget
 
   Widget _buildPrayerCard(Map<String, dynamic> prayer) {
     final title = prayer['title'] as String? ?? 'Prayer';
-    final prayerDate = prayer['prayer_date'] as String?;
-    final startTime = prayer['start_time'] as String?;
-    final endTime = prayer['end_time'] as String?;
-    final status = (prayer['status'] as String? ?? 'upcoming').toLowerCase();
+    final startStr = prayer['start_datetime'] as String?;
+    final endStr = prayer['end_datetime'] as String?;
+    final status = (prayer['status'] as String? ?? '').toLowerCase();
     final prayerType = (prayer['prayer_type'] as String? ?? 'offline').toLowerCase();
     final location = prayer['location'] as String?;
+    final recurrenceType = prayer['recurrence_type'] as String?;
+    final isOngoing = status == 'ongoing';
 
-    String timeDisplay = "TBD";
-    if (startTime != null && endTime != null) {
-      timeDisplay = "${_formatTime(startTime)} - ${_formatTime(endTime)}";
-    } else if (startTime != null) {
-      timeDisplay = _formatTime(startTime);
+    // Determine icon color based on status
+    Color iconColor;
+    Color iconBgColor;
+    DateTime? start;
+    try {
+      if (startStr != null) {
+        start = DateTime.parse(startStr).toLocal();
+      }
+    } catch (e) {
+      start = null;
+    }
+    
+    if (status == 'ongoing') {
+      // Live Now - Red
+      iconColor = Colors.red[700]!;
+      iconBgColor = Colors.red[50]!;
+    } else if (status == 'completed') {
+      // Past - Grey
+      iconColor = Colors.grey[600]!;
+      iconBgColor = Colors.grey[200]!;
+    } else if (start != null) {
+      final now = DateTime.now();
+      final todayStart = DateTime(now.year, now.month, now.day);
+      final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);
+      final startOnly = DateTime(start.year, start.month, start.day);
+      
+      if (start.isBefore(todayEnd) && start.isAfter(todayStart) || 
+          (startOnly == todayStart)) {
+        // Today - Orange
+        iconColor = Colors.orange[700]!;
+        iconBgColor = Colors.orange[50]!;
+      } else {
+        // Upcoming - Green
+        iconColor = Colors.green[700]!;
+        iconBgColor = Colors.green[50]!;
+      }
+    } else {
+      // Default - Green for upcoming
+      iconColor = Colors.green[700]!;
+      iconBgColor = Colors.green[50]!;
     }
 
-    final isLive = status == 'inprogress';
-    
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
-      elevation: isLive ? 4 : 2,
+      elevation: isOngoing ? 4 : 2,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: isLive 
+        side: isOngoing
           ? BorderSide(color: Colors.red[400]!, width: 2)
           : BorderSide.none,
       ),
-      color: isLive ? Colors.red[50]?.withAlpha((255 * 0.3).round()) : null,
+      color: isOngoing ? Colors.red[50]?.withAlpha((255 * 0.3).round()) : null,
       child: InkWell(
         onTap: () {
           Navigator.push(
@@ -316,19 +378,20 @@ class _MemberScheduleScreenState extends State<MemberScheduleScreen> with Widget
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: isLive ? Colors.red[50] : Colors.blue[50],
+                  color: iconBgColor,
                   borderRadius: BorderRadius.circular(10),
-                  border: isLive 
+                  border: isOngoing
                     ? Border.all(color: Colors.red[300]!, width: 1.5)
                     : null,
                 ),
                 child: Icon(
                   Icons.favorite,
-                  color: isLive ? Colors.red[700] : Colors.blue,
+                  color: iconColor,
                   size: 24,
                 ),
               ),
@@ -336,6 +399,7 @@ class _MemberScheduleScreenState extends State<MemberScheduleScreen> with Widget
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.start,
                   children: [
                     Row(
                       children: [
@@ -402,66 +466,70 @@ class _MemberScheduleScreenState extends State<MemberScheduleScreen> with Widget
                         _buildStatusTag(status),
                       ],
                     ),
+                    if (recurrenceType != null && recurrenceType.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        recurrenceType,
+                        style: TextStyle(fontSize: 12, color: Colors.grey[600], fontStyle: FontStyle.italic),
+                      ),
+                    ],
                     const SizedBox(height: 8),
                     Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(Icons.calendar_today, size: 14, color: Colors.grey[600]),
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Icon(Icons.calendar_today, size: 14, color: Colors.grey[600]),
+                        ),
                         const SizedBox(width: 4),
-                        Text(
-                          _formatDate(prayerDate),
-                          style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                        Expanded(
+                          child: Text(
+                            _formatDate(startStr, endStr),
+                            style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                          ),
                         ),
                       ],
                     ),
                     const SizedBox(height: 4),
                     Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(Icons.access_time, size: 14, color: Colors.grey[600]),
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Icon(Icons.access_time, size: 14, color: Colors.grey[600]),
+                        ),
                         const SizedBox(width: 4),
-                        Text(
-                          timeDisplay,
-                          style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                        Expanded(
+                          child: Text(
+                            _formatTime(startStr, endStr),
+                            style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                          ),
                         ),
                       ],
                     ),
-                    if (prayerType == 'offline')
-                      Padding(
-                        padding: const EdgeInsets.only(top: 4),
-                        child: Row(
-                          children: [
-                            Icon(Icons.location_on, size: 14, color: Colors.grey[600]),
-                            const SizedBox(width: 4),
-                            Expanded(
-                              child: Text(
-                                location ?? "Location TBD",
-                                style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-                                overflow: TextOverflow.ellipsis,
-                              ),
+                    if (location != null) ...[
+                      const SizedBox(height: 4),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Icon(Icons.location_on, size: 14, color: Colors.grey[600]),
+                          ),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              location,
+                              style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                              overflow: TextOverflow.ellipsis,
                             ),
-                          ],
-                        ),
-                      )
-                    else if (prayerType == 'online')
-                      Padding(
-                        padding: const EdgeInsets.only(top: 4),
-                        child: Row(
-                          children: [
-                            Icon(Icons.chat, size: 14, color: Colors.green[600]),
-                            const SizedBox(width: 4),
-                            Expanded(
-                              child: Text(
-                                "Join via WhatsApp",
-                                style: TextStyle(fontSize: 14, color: Colors.green[600], fontWeight: FontWeight.w500),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
+                    ],
                   ],
                 ),
               ),
-              const Icon(Icons.chevron_right, color: Colors.grey),
             ],
           ),
         ),
@@ -469,38 +537,55 @@ class _MemberScheduleScreenState extends State<MemberScheduleScreen> with Widget
     );
   }
 
-  Widget _buildPrayersList(List<Map<String, dynamic>> prayers) {
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator());
+  Widget _buildLIVENowSection() {
+    final ongoingPrayers = _getOngoingPrayers();
+    
+    if (ongoingPrayers.isEmpty) {
+      return const SizedBox.shrink();
     }
 
-    if (prayers.isEmpty) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+          child: const Text(
+            "LIVE NOW",
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: Colors.red,
+              letterSpacing: 1.0,
+            ),
+          ),
+        ),
+        ...ongoingPrayers.map((prayer) => Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: _buildPrayerCard(prayer),
+        )),
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+
+  Widget _buildTodayTab() {
+    final todayPrayers = _getTodayPrayers();
+    final ongoingPrayers = _getOngoingPrayers();
+
+    if (todayPrayers.isEmpty && ongoingPrayers.isEmpty) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
-              Icons.favorite_border,
-              size: 64,
-              color: Colors.grey[400],
-            ),
+            Icon(Icons.favorite_border, size: 64, color: Colors.grey[400]),
             const SizedBox(height: 16),
             Text(
-              _selectedTabIndex == 0 
-                ? "No prayers scheduled for today"
-                : _selectedTabIndex == 1
-                  ? "No upcoming prayers"
-                  : "No past prayers",
+              "No prayers for today",
               style: TextStyle(
                 fontSize: 16,
                 color: Colors.grey[600],
                 fontWeight: FontWeight.w500,
               ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              "Please check back later",
-              style: TextStyle(color: Colors.grey[500]),
             ),
           ],
         ),
@@ -509,12 +594,82 @@ class _MemberScheduleScreenState extends State<MemberScheduleScreen> with Widget
 
     return RefreshIndicator(
       onRefresh: _loadPrayers,
-      child: ListView.builder(
+      child: ListView(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        children: [
+          if (ongoingPrayers.isNotEmpty) _buildLIVENowSection(),
+          ...todayPrayers.where((p) {
+            final status = (p['status'] as String? ?? '').toLowerCase();
+            return status != 'ongoing'; // Don't duplicate ongoing prayers
+          }).map((prayer) => Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: _buildPrayerCard(prayer),
+          )),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildUpcomingTab() {
+    final upcomingPrayers = _getUpcomingPrayers();
+
+    if (upcomingPrayers.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.favorite_border, size: 64, color: Colors.grey[400]),
+            const SizedBox(height: 16),
+            Text(
+              "No upcoming prayers",
+              style: TextStyle(
+                fontSize: 16,
+                color: Colors.grey[600],
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _loadPrayers,
+      child: ListView(
         padding: const EdgeInsets.all(16),
-        itemCount: prayers.length,
-        itemBuilder: (context, index) {
-          return _buildPrayerCard(prayers[index]);
-        },
+        children: upcomingPrayers.map((prayer) => _buildPrayerCard(prayer)).toList(),
+      ),
+    );
+  }
+
+  Widget _buildPastTab() {
+    final pastPrayers = _getPastPrayers();
+
+    if (pastPrayers.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.history, size: 64, color: Colors.grey[400]),
+            const SizedBox(height: 16),
+            Text(
+              "No past prayers",
+              style: TextStyle(
+                fontSize: 16,
+                color: Colors.grey[600],
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _loadPrayers,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: pastPrayers.map((prayer) => _buildPrayerCard(prayer)).toList(),
       ),
     );
   }
@@ -524,17 +679,22 @@ class _MemberScheduleScreenState extends State<MemberScheduleScreen> with Widget
     return Scaffold(
       appBar: AppBar(
         title: const Text("Prayer Schedule"),
+        backgroundColor: Colors.blue[700],
+        foregroundColor: Colors.white,
         bottom: TabBar(
           controller: _tabController,
+          indicatorColor: Colors.white,
+          labelColor: Colors.white,
+          unselectedLabelColor: Colors.white70,
           onTap: (index) {
             setState(() {
               _selectedTabIndex = index;
-              if (index == 0) {
-                _startAutoRefresh(); // Restart auto-refresh for Today tab
-              } else {
-                _refreshTimer?.cancel(); // Stop auto-refresh for other tabs
-              }
             });
+            if (index == 0) {
+              _startAutoRefresh(); // Restart auto-refresh for Today tab
+            } else {
+              _refreshTimer?.cancel(); // Stop auto-refresh for other tabs
+            }
             // Refresh when switching tabs
             _loadPrayers(silent: true);
           },
@@ -545,14 +705,19 @@ class _MemberScheduleScreenState extends State<MemberScheduleScreen> with Widget
           ],
         ),
       ),
-      body: TabBarView(
-        controller: _tabController,
-        children: [
-          _buildPrayersList(_getTodayPrayers()),
-          _buildPrayersList(_getUpcomingPrayers()),
-          _buildPrayersList(_getPastPrayers()),
-        ],
-      ),
+      body: _loading && _allPrayers.isEmpty
+          ? const Center(child: CircularProgressIndicator())
+          : TabBarView(
+              controller: _tabController,
+              children: [
+                // Today Tab
+                _buildTodayTab(),
+                // Upcoming Tab
+                _buildUpcomingTab(),
+                // Past Tab
+                _buildPastTab(),
+              ],
+            ),
     );
   }
 }

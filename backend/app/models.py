@@ -20,6 +20,7 @@ class User(Base):
 
     prayers = relationship("Prayer", back_populates="creator")
     event_series = relationship("EventSeries", back_populates="creator")
+    prayer_series = relationship("PrayerSeries", back_populates="creator")
 
 
 class Prayer(Base):
@@ -36,7 +37,7 @@ class Prayer(Base):
     location = Column(String, nullable=True)  # Physical location (required for offline)
     join_info = Column(String, nullable=True)  # WhatsApp link/instructions (required for online)
 
-    status = Column(String, nullable=False, default="upcoming", index=True)  # upcoming, inprogress, completed
+    status = Column(String, nullable=False, default="upcoming", index=True)  # upcoming, ongoing, completed
 
     created_by = Column(
         Integer,
@@ -128,3 +129,69 @@ class EventOccurrence(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     series = relationship("EventSeries", back_populates="occurrences")
+
+
+class PrayerSeries(Base):
+    """
+    Prayer Series (Template/Recurrence Definition)
+    Used only by pastors/backend. Members never see this directly.
+    Supports daily, weekly, and monthly recurrence.
+    Supports multi-day prayers (e.g., 11pm to 1am night prayers).
+    Generates occurrences for 3 months ahead (rolling generation with max_months limit).
+    """
+    __tablename__ = "prayer_series"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    prayer_type = Column(String, nullable=False)  # online, offline
+    location = Column(String, nullable=True)  # Required for offline
+    join_info = Column(String, nullable=True)  # Required for online
+    recurrence_type = Column(String, nullable=False, default="none")  # none, daily, weekly, monthly
+    recurrence_days = Column(String, nullable=True)  # For weekly: comma-separated days (0=Mon, 6=Sun)
+    recurrence_end_date = Column(Date, nullable=True)  # Optional end date
+    recurrence_count = Column(Integer, nullable=True)  # Optional: end after N occurrences
+    start_datetime = Column(DateTime(timezone=True), nullable=False)  # First occurrence start datetime (supports multi-day)
+    end_datetime = Column(DateTime(timezone=True), nullable=False)  # First occurrence end datetime (supports multi-day)
+    created_by = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    creator = relationship("User", back_populates="prayer_series")
+    occurrences = relationship("PrayerOccurrence", back_populates="series", cascade="all, delete-orphan")
+
+
+class PrayerOccurrence(Base):
+    """
+    Prayer Occurrences (Actual Prayers)
+    This is what everyone sees - concrete, time-bounded prayers.
+    Each occurrence has its own lifecycle and audit trail.
+    Supports multi-day prayers (e.g., 11pm to 1am night prayers).
+    Generated for 3 months ahead (rolling generation).
+    """
+    __tablename__ = "prayer_occurrences"
+
+    id = Column(Integer, primary_key=True, index=True)
+    prayer_series_id = Column(
+        Integer,
+        ForeignKey("prayer_series.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title = Column(String, nullable=False)  # Snapshot from series
+    prayer_type = Column(String, nullable=False)  # Snapshot from series
+    location = Column(String, nullable=True)  # Snapshot from series
+    join_info = Column(String, nullable=True)  # Snapshot from series
+    start_datetime = Column(DateTime(timezone=True), nullable=False, index=True)  # Start datetime (supports multi-day)
+    end_datetime = Column(DateTime(timezone=True), nullable=False, index=True)  # End datetime (supports multi-day)
+    status = Column(String, nullable=False, default="upcoming", index=True)  # upcoming, ongoing, completed
+    recurrence_type = Column(String, nullable=True)  # For label display: daily/weekly/monthly
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    series = relationship("PrayerSeries", back_populates="occurrences")

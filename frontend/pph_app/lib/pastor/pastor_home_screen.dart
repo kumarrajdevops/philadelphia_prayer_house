@@ -131,44 +131,28 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
     }
 
     try {
-      final allPrayers = await PrayerService.getAllPrayers();
-      print("Loaded ${allPrayers.length} prayers from API");
-      
-      // Filter prayers for today
-      final today = DateTime.now();
-      final todayStr = "${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}";
-      print("Filtering for today's date: $todayStr");
-      
-      // Filter prayers for today AND exclude completed (only show Upcoming + In Progress)
-      final todayPrayersList = allPrayers.where((prayer) {
-        final prayerDate = prayer['prayer_date'] as String?;
-        final status = (prayer['status'] as String? ?? '').toLowerCase();
-        // Only show today's prayers that are upcoming or inprogress (exclude completed)
-        return prayerDate != null && 
-               prayerDate.startsWith(todayStr) &&
-               (status == 'upcoming' || status == 'inprogress');
-      }).toList();
+      // Use occurrences API with "today" tab (already filters for today and excludes completed)
+      final todayPrayersList = await PrayerService.getPrayerOccurrences(tab: "today");
+      print("Loaded ${todayPrayersList.length} prayers for today from occurrences API");
 
-      print("Found ${todayPrayersList.length} active prayers for today (excluding completed)");
-
-      // Sort by start_time (ascending - earliest first)
+      // Sort by start_datetime (ascending - earliest first)
       todayPrayersList.sort((a, b) {
-        final aTime = a['start_time'] as String? ?? '';
-        final bTime = b['start_time'] as String? ?? '';
-        return aTime.compareTo(bTime);
+        final aStart = a['start_datetime'] as String? ?? '';
+        final bStart = b['start_datetime'] as String? ?? '';
+        return aStart.compareTo(bStart);
       });
 
       // Get only the first 5 prayers (after sorting by time)
       final limitedPrayers = todayPrayersList.take(5).toList();
 
-      // Find all live prayers (inprogress)
+      // Find all live prayers (ongoing)
       final livePrayersList = todayPrayersList.where((prayer) {
         final status = (prayer['status'] as String? ?? '').toLowerCase();
-        return status == 'inprogress';
+        return status == 'ongoing';
       }).toList()
         ..sort((a, b) {
-          final timeA = a['start_time'] as String? ?? '';
-          final timeB = b['start_time'] as String? ?? '';
+          final timeA = a['start_datetime'] as String? ?? '';
+          final timeB = b['start_datetime'] as String? ?? '';
           return timeA.compareTo(timeB);
         });
 
@@ -627,17 +611,27 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
     }
 
     final title = prayer['title'] as String? ?? 'Prayer';
-    final startTime = prayer['start_time'] as String?;
-    final endTime = prayer['end_time'] as String?;
+    final startStr = prayer['start_datetime'] as String?;
+    final endStr = prayer['end_datetime'] as String?;
     final prayerType = (prayer['prayer_type'] as String? ?? 'offline').toLowerCase();
     final location = prayer['location'] as String?;
     final joinInfo = prayer['join_info'] as String?;
 
     String timeDisplay = "TBD";
-    if (startTime != null && endTime != null) {
-      timeDisplay = "${formatTime(startTime)} - ${formatTime(endTime)}";
-    } else if (startTime != null) {
-      timeDisplay = formatTime(startTime);
+    if (startStr != null && endStr != null) {
+      try {
+        final start = DateTime.parse(startStr).toLocal();
+        final end = DateTime.parse(endStr).toLocal();
+        if (start.year == end.year && start.month == end.month && start.day == end.day) {
+          // Same day
+          timeDisplay = "${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
+        } else {
+          // Multi-day
+          timeDisplay = "${DateFormat('MMM d, h:mm a').format(start)} - ${DateFormat('MMM d, h:mm a').format(end)}";
+        }
+      } catch (e) {
+        timeDisplay = "$startStr - $endStr";
+      }
     }
 
     return Container(
@@ -1334,7 +1328,7 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
                         ...() {
                           final filteredPrayers = todayPrayers.where((prayer) {
                             final status = (prayer['status'] as String? ?? '').toLowerCase();
-                            return status != 'inprogress';
+                            return status != 'ongoing';
                           }).toList();
                           return filteredPrayers.asMap().entries.map((entry) {
                             final index = entry.key;
@@ -1369,36 +1363,29 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
   }
 
   Widget _buildPrayerScheduleItem(Map<String, dynamic> prayer) {
-    // Parse time from "HH:MM:SS" format
-    String formatTime(String? timeStr) {
-      if (timeStr == null || timeStr.isEmpty) return "TBD";
-      try {
-        final parts = timeStr.split(':');
-        if (parts.length >= 2) {
-          final hour = int.parse(parts[0]);
-          final minute = int.parse(parts[1]);
-          final time = TimeOfDay(hour: hour, minute: minute);
-          return time.format(context);
-        }
-      } catch (e) {
-        print("Error parsing time: $e");
-      }
-      return timeStr;
-    }
-
     final title = prayer['title'] as String? ?? 'Prayer';
-    final startTime = prayer['start_time'] as String?;
-    final endTime = prayer['end_time'] as String?;
+    final startStr = prayer['start_datetime'] as String?;
+    final endStr = prayer['end_datetime'] as String?;
     final status = (prayer['status'] as String? ?? 'upcoming').toLowerCase();
     final prayerType = (prayer['prayer_type'] as String? ?? 'offline').toLowerCase();
     final location = prayer['location'] as String?;
     final joinInfo = prayer['join_info'] as String?;
     
     String timeDisplay = "TBD";
-    if (startTime != null && endTime != null) {
-      timeDisplay = "${formatTime(startTime)} - ${formatTime(endTime)}";
-    } else if (startTime != null) {
-      timeDisplay = formatTime(startTime);
+    if (startStr != null && endStr != null) {
+      try {
+        final start = DateTime.parse(startStr).toLocal();
+        final end = DateTime.parse(endStr).toLocal();
+        if (start.year == end.year && start.month == end.month && start.day == end.day) {
+          // Same day
+          timeDisplay = "${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
+        } else {
+          // Multi-day
+          timeDisplay = "${DateFormat('MMM d, h:mm a').format(start)} - ${DateFormat('MMM d, h:mm a').format(end)}";
+        }
+      } catch (e) {
+        timeDisplay = "$startStr - $endStr";
+      }
     }
 
     // Determine location display based on prayer type
@@ -1427,8 +1414,7 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
     Color textColor;
     
     switch (status.toLowerCase()) {
-      case 'inprogress':
-      case 'ongoing': // Events use 'ongoing', prayers use 'inprogress'
+      case 'ongoing':
         // LIVE NOW - more prominent visual emphasis
         displayText = 'LIVE NOW';
         backgroundColor = Colors.red[50]!;
@@ -1447,8 +1433,8 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
         break;
     }
     
-    // Special styling for LIVE NOW (in-progress or ongoing)
-    if (status.toLowerCase() == 'inprogress' || status.toLowerCase() == 'ongoing') {
+    // Special styling for LIVE NOW (ongoing)
+    if (status.toLowerCase() == 'ongoing') {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
@@ -1729,8 +1715,27 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
     String? prayerType,
     Map<String, dynamic>? prayer, // Can be prayer or event data for navigation
   }) {
-    // Determine if it's an event (has start_datetime) or prayer (has start_time)
-    final isEvent = prayer != null && prayer.containsKey('start_datetime');
+    // Determine if it's an event (has event_type) or prayer (has prayer_type)
+    final isEvent = prayer != null && prayer.containsKey('event_type');
+    
+    // Determine icon color based on status
+    Color iconColor;
+    Color iconBgColor;
+    
+    if (status == 'ongoing') {
+      // Live Now - Red
+      iconColor = Colors.red[700]!;
+      iconBgColor = Colors.red[50]!;
+    } else if (status == 'completed') {
+      // Past - Grey
+      iconColor = Colors.grey[600]!;
+      iconBgColor = Colors.grey[200]!;
+    } else {
+      // Today (upcoming but happening today) - Orange
+      // Since these are "Today's" items, they're either ongoing or today (not future)
+      iconColor = Colors.orange[700]!;
+      iconBgColor = Colors.orange[50]!;
+    }
     
     return InkWell(
       onTap: prayer != null
@@ -1776,10 +1781,10 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
         Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: Colors.blue[50],
+            color: iconBgColor,
             borderRadius: BorderRadius.circular(10),
           ),
-          child: Icon(icon, color: Colors.blue[700], size: 24),
+          child: Icon(icon, color: iconColor, size: 24),
         ),
         const SizedBox(width: 16),
         Expanded(

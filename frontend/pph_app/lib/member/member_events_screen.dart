@@ -178,7 +178,7 @@ class _MemberEventsScreenState extends State<MemberEventsScreen> with TickerProv
       });
   }
 
-  String _formatDateRange(String? startStr, String? endStr) {
+  String _formatDate(String? startStr, String? endStr) {
     if (startStr == null || endStr == null) return "TBD";
     try {
       final start = DateTime.parse(startStr).toLocal();
@@ -190,21 +190,30 @@ class _MemberEventsScreenState extends State<MemberEventsScreen> with TickerProv
       if (start.year == end.year && start.month == end.month && start.day == end.day) {
         // Same day
         final dateOnly = DateTime(start.year, start.month, start.day);
-        String dateLabel;
         if (dateOnly == today) {
-          dateLabel = "Today";
+          return "Today";
         } else if (dateOnly == tomorrow) {
-          dateLabel = "Tomorrow";
+          return "Tomorrow";
         } else {
-          dateLabel = DateFormat('MMM d, y').format(start);
+          return DateFormat('MMM d, y').format(start);
         }
-        return "$dateLabel · ${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
       } else {
         // Multi-day
-        return "${DateFormat('MMM d').format(start)} - ${DateFormat('MMM d, y').format(end)} · ${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
+        return "${DateFormat('MMM d').format(start)} - ${DateFormat('MMM d, y').format(end)}";
       }
     } catch (e) {
-      return "$startStr - $endStr";
+      return "TBD";
+    }
+  }
+
+  String _formatTime(String? startStr, String? endStr) {
+    if (startStr == null || endStr == null) return "TBD";
+    try {
+      final start = DateTime.parse(startStr).toLocal();
+      final end = DateTime.parse(endStr).toLocal();
+      return "${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
+    } catch (e) {
+      return "TBD";
     }
   }
 
@@ -294,6 +303,48 @@ class _MemberEventsScreenState extends State<MemberEventsScreen> with TickerProv
     final recurrenceType = event['recurrence_type'] as String?;
     final isOngoing = status == 'ongoing';
 
+    // Determine icon color based on status
+    Color iconColor;
+    Color iconBgColor;
+    DateTime? start;
+    try {
+      if (startStr != null) {
+        start = DateTime.parse(startStr).toLocal();
+      }
+    } catch (e) {
+      start = null;
+    }
+    
+    if (status == 'ongoing') {
+      // Live Now - Red
+      iconColor = Colors.red[700]!;
+      iconBgColor = Colors.red[50]!;
+    } else if (status == 'completed') {
+      // Past - Grey
+      iconColor = Colors.grey[600]!;
+      iconBgColor = Colors.grey[200]!;
+    } else if (start != null) {
+      final now = DateTime.now();
+      final todayStart = DateTime(now.year, now.month, now.day);
+      final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);
+      final startOnly = DateTime(start.year, start.month, start.day);
+      
+      if (start.isBefore(todayEnd) && start.isAfter(todayStart) || 
+          (startOnly == todayStart)) {
+        // Today - Orange
+        iconColor = Colors.orange[700]!;
+        iconBgColor = Colors.orange[50]!;
+      } else {
+        // Upcoming - Green
+        iconColor = Colors.green[700]!;
+        iconBgColor = Colors.green[50]!;
+      }
+    } else {
+      // Default - Green for upcoming
+      iconColor = Colors.green[700]!;
+      iconBgColor = Colors.green[50]!;
+    }
+
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       elevation: isOngoing ? 4 : 2,
@@ -317,11 +368,12 @@ class _MemberEventsScreenState extends State<MemberEventsScreen> with TickerProv
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: isOngoing ? Colors.red[50] : Colors.purple[50],
+                  color: iconBgColor,
                   borderRadius: BorderRadius.circular(10),
                   border: isOngoing
                     ? Border.all(color: Colors.red[300]!, width: 1.5)
@@ -329,7 +381,7 @@ class _MemberEventsScreenState extends State<MemberEventsScreen> with TickerProv
                 ),
                 child: Icon(
                   Icons.event,
-                  color: isOngoing ? Colors.red[700] : Colors.purple,
+                  color: iconColor,
                   size: 24,
                 ),
               ),
@@ -337,6 +389,7 @@ class _MemberEventsScreenState extends State<MemberEventsScreen> with TickerProv
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.start,
                   children: [
                     Row(
                       children: [
@@ -387,12 +440,33 @@ class _MemberEventsScreenState extends State<MemberEventsScreen> with TickerProv
                     ],
                     const SizedBox(height: 8),
                     Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(Icons.calendar_today, size: 14, color: Colors.grey[600]),
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Icon(Icons.calendar_today, size: 14, color: Colors.grey[600]),
+                        ),
                         const SizedBox(width: 4),
                         Expanded(
                           child: Text(
-                            _formatDateRange(startStr, endStr),
+                            _formatDate(startStr, endStr),
+                            style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Icon(Icons.access_time, size: 14, color: Colors.grey[600]),
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            _formatTime(startStr, endStr),
                             style: TextStyle(fontSize: 14, color: Colors.grey[600]),
                           ),
                         ),
@@ -401,8 +475,12 @@ class _MemberEventsScreenState extends State<MemberEventsScreen> with TickerProv
                     if (location != null) ...[
                       const SizedBox(height: 4),
                       Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Icon(Icons.location_on, size: 14, color: Colors.grey[600]),
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Icon(Icons.location_on, size: 14, color: Colors.grey[600]),
+                          ),
                           const SizedBox(width: 4),
                           Expanded(
                             child: Text(

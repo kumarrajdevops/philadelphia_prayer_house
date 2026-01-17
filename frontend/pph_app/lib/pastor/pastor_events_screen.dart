@@ -92,19 +92,15 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
     }
 
     try {
-      final prayers = await PrayerService.getAllPrayers();
-      print("Loaded ${prayers.length} prayers for Events tab");
+      // Use occurrences API (loads all occurrences, we filter by tab client-side)
+      final prayers = await PrayerService.getPrayerOccurrences();
+      print("Loaded ${prayers.length} prayer occurrences for Events tab");
 
-      // Sort by date (ascending) and then by time (ascending)
+      // Sort by start_datetime (ascending)
       prayers.sort((a, b) {
-        final aDate = a['prayer_date'] as String? ?? '';
-        final bDate = b['prayer_date'] as String? ?? '';
-        final dateCompare = aDate.compareTo(bDate);
-        if (dateCompare != 0) return dateCompare;
-        
-        final aTime = a['start_time'] as String? ?? '';
-        final bTime = b['start_time'] as String? ?? '';
-        return aTime.compareTo(bTime);
+        final aStart = a['start_datetime'] as String? ?? '';
+        final bStart = b['start_datetime'] as String? ?? '';
+        return aStart.compareTo(bStart);
       });
 
       if (mounted) {
@@ -127,52 +123,81 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
   }
 
   List<Map<String, dynamic>> _getPrayersForTab(int index) {
-    final today = DateTime.now();
-    final todayStr = "${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}";
+    final now = DateTime.now();
 
     switch (index) {
-      case 0: // Today: In Progress (today) + Upcoming (today only)
+      case 0: // Today: Ongoing OR starts today (but NOT completed)
         return allPrayers.where((prayer) {
-          final prayerDate = prayer['prayer_date'] as String?;
+          final startStr = prayer['start_datetime'] as String?;
+          final endStr = prayer['end_datetime'] as String?;
           final status = (prayer['status'] as String? ?? '').toLowerCase();
-          // Show today's prayers that are upcoming or inprogress (exclude completed)
-          return prayerDate != null && 
-                 prayerDate.startsWith(todayStr) &&
-                 (status == 'upcoming' || status == 'inprogress');
+          
+          if (startStr == null || endStr == null) return false;
+          
+          // Exclude completed prayers from Today tab
+          if (status == 'completed') return false;
+          
+          try {
+            final start = DateTime.parse(startStr).toLocal();
+            final end = DateTime.parse(endStr).toLocal();
+            final todayStart = DateTime(now.year, now.month, now.day);
+            final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);
+            
+            // Show if ongoing OR starts today (but not completed)
+            return (start.isBefore(todayEnd) && end.isAfter(todayStart)) ||
+                   (start.isAfter(todayStart) && start.isBefore(todayEnd));
+          } catch (e) {
+            return false;
+          }
         }).toList()
           ..sort((a, b) {
-            final timeA = a['start_time'] as String? ?? '';
-            final timeB = b['start_time'] as String? ?? '';
-            return timeA.compareTo(timeB); // Ascending order (earliest first)
+            final startA = a['start_datetime'] as String? ?? '';
+            final startB = b['start_datetime'] as String? ?? '';
+            return startA.compareTo(startB); // Ascending order (earliest first)
           });
-      case 1: // Upcoming: Future prayers (beyond today, status = upcoming)
+      case 1: // Upcoming: Future prayers (date > today, not completed, exclude today's prayers)
         return allPrayers.where((prayer) {
-          final prayerDate = prayer['prayer_date'] as String?;
+          final startStr = prayer['start_datetime'] as String?;
           final status = (prayer['status'] as String? ?? '').toLowerCase();
-          if (prayerDate == null) return false;
-          // Show prayers from tomorrow onwards with status = upcoming
-          return prayerDate.compareTo(todayStr) > 0 && status == 'upcoming';
+          if (startStr == null) return false;
+          
+          try {
+            final start = DateTime.parse(startStr).toLocal();
+            final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);
+            
+            // Show future prayers that start after today (tomorrow or later)
+            // Exclude today's prayers (they should be in Today tab)
+            return start.isAfter(todayEnd) && status != 'completed';
+          } catch (e) {
+            return false;
+          }
         }).toList()
           ..sort((a, b) {
-            final dateA = a['prayer_date'] as String? ?? '';
-            final dateB = b['prayer_date'] as String? ?? '';
-            if (dateA != dateB) return dateA.compareTo(dateB); // Ascending by date
-            final timeA = a['start_time'] as String? ?? '';
-            final timeB = b['start_time'] as String? ?? '';
-            return timeA.compareTo(timeB); // Ascending by time
+            final startA = a['start_datetime'] as String? ?? '';
+            final startB = b['start_datetime'] as String? ?? '';
+            return startA.compareTo(startB); // Ascending order (earliest first)
           });
-      case 2: // Past: Completed prayers (status = completed, any date)
+      case 2: // Past: Completed prayers (end_datetime < now, or status = completed)
         return allPrayers.where((prayer) {
+          final startStr = prayer['start_datetime'] as String?;
+          final endStr = prayer['end_datetime'] as String?;
           final status = (prayer['status'] as String? ?? '').toLowerCase();
-          return status == 'completed';
+          
+          if (endStr == null) return false;
+          
+          try {
+            final end = DateTime.parse(endStr).toLocal();
+            // Show if end_datetime is in the past (regardless of status, as fallback)
+            // OR if status is explicitly 'completed'
+            return end.isBefore(now) || status == 'completed';
+          } catch (e) {
+            return false;
+          }
         }).toList()
           ..sort((a, b) {
-            final dateA = a['prayer_date'] as String? ?? '';
-            final dateB = b['prayer_date'] as String? ?? '';
-            if (dateA != dateB) return dateB.compareTo(dateA); // Descending by date (latest first)
-            final timeA = a['start_time'] as String? ?? '';
-            final timeB = b['start_time'] as String? ?? '';
-            return timeB.compareTo(timeA); // Descending by time
+            final startA = a['start_datetime'] as String? ?? '';
+            final startB = b['start_datetime'] as String? ?? '';
+            return startB.compareTo(startA); // Descending order (latest first)
           });
       default:
         return [];
@@ -240,39 +265,20 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
     return months[month - 1];
   }
 
-  /// Check if prayer has started (compare date + start_time with current time up to HH:MM precision)
+  /// Check if prayer has started (compare start_datetime with current time)
   bool _hasPrayerStarted(Map<String, dynamic> prayer) {
-    final prayerDate = prayer['prayer_date'] as String?;
-    final startTime = prayer['start_time'] as String?;
+    final startStr = prayer['start_datetime'] as String?;
     
-    if (prayerDate == null || startTime == null) {
-      return false; // If no date/time, assume it hasn't started (safe default)
+    if (startStr == null) {
+      return false; // If no datetime, assume it hasn't started (safe default)
     }
     
     try {
-      // Parse date (YYYY-MM-DD)
-      final dateParts = prayerDate.split('-');
-      if (dateParts.length < 3) return false;
-      final year = int.parse(dateParts[0]);
-      final month = int.parse(dateParts[1]);
-      final day = int.parse(dateParts[2]);
-      
-      // Parse time (HH:MM:SS)
-      final timeParts = startTime.split(':');
-      if (timeParts.length < 2) return false;
-      final hour = int.parse(timeParts[0]);
-      final minute = int.parse(timeParts[1]);
-      
-      // Create prayer DateTime
-      final prayerDateTime = DateTime(year, month, day, hour, minute);
+      final start = DateTime.parse(startStr).toLocal();
       final now = DateTime.now();
       
-      // Truncate to minute precision for comparison
-      final prayerTruncated = DateTime(year, month, day, hour, minute);
-      final nowTruncated = DateTime(now.year, now.month, now.day, now.hour, now.minute);
-      
       // Check if prayer has started (including current moment)
-      return prayerTruncated.compareTo(nowTruncated) <= 0;
+      return start.isBefore(now) || start.isAtSameMomentAs(now);
     } catch (e) {
       print("Error checking if prayer started: $e");
       return false; // Safe default: assume it hasn't started
@@ -346,7 +352,7 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
     );
     
     try {
-      final success = await PrayerService.deletePrayer(prayerId);
+      final success = await PrayerService.deletePrayerOccurrence(occurrenceId: prayerId);
       
       if (!mounted) return;
       
@@ -685,7 +691,7 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
     Color textColor;
     
     switch (status.toLowerCase()) {
-      case 'inprogress':
+      case 'ongoing':
         // LIVE NOW - more prominent visual emphasis
         displayText = 'LIVE NOW';
         backgroundColor = Colors.red[50]!;
@@ -704,8 +710,8 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
         break;
     }
     
-    // Special styling for LIVE NOW (in-progress)
-    if (status.toLowerCase() == 'inprogress') {
+    // Special styling for LIVE NOW (ongoing)
+    if (status.toLowerCase() == 'ongoing') {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
@@ -769,23 +775,79 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
 
   Widget _buildPrayerCard(Map<String, dynamic> prayer) {
     final title = prayer['title'] as String? ?? 'Prayer';
-    final prayerDate = prayer['prayer_date'] as String?;
-    final startTime = prayer['start_time'] as String?;
-    final endTime = prayer['end_time'] as String?;
+    final startStr = prayer['start_datetime'] as String?;
+    final endStr = prayer['end_datetime'] as String?;
     final status = (prayer['status'] as String? ?? 'upcoming').toLowerCase();
     final prayerType = (prayer['prayer_type'] as String? ?? 'offline').toLowerCase();
     final location = prayer['location'] as String?;
     final joinInfo = prayer['join_info'] as String?;
     final canEdit = status == 'upcoming'; // Only show edit/delete if status is upcoming
 
+    String dateTimeDisplay = "TBD";
+    String dateDisplay = "TBD";
     String timeDisplay = "TBD";
-    if (startTime != null && endTime != null) {
-      timeDisplay = "${_formatTime(startTime)} - ${_formatTime(endTime)}";
-    } else if (startTime != null) {
-      timeDisplay = _formatTime(startTime);
+    if (startStr != null && endStr != null) {
+      try {
+        final start = DateTime.parse(startStr).toLocal();
+        final end = DateTime.parse(endStr).toLocal();
+        if (start.year == end.year && start.month == end.month && start.day == end.day) {
+          // Same day
+          dateDisplay = DateFormat('MMM d, y').format(start);
+          timeDisplay = "${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
+        } else {
+          // Multi-day
+          dateDisplay = "${DateFormat('MMM d').format(start)} - ${DateFormat('MMM d, y').format(end)}";
+          timeDisplay = "${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
+        }
+      } catch (e) {
+        dateDisplay = "TBD";
+        timeDisplay = "$startStr - $endStr";
+      }
     }
 
-    final isLive = status == 'inprogress';
+    final isLive = status == 'ongoing';
+    
+    // Determine icon color based on status
+    Color iconColor;
+    Color iconBgColor;
+    DateTime? start;
+    try {
+      if (startStr != null) {
+        start = DateTime.parse(startStr).toLocal();
+      }
+    } catch (e) {
+      start = null;
+    }
+    
+    if (status == 'ongoing') {
+      // Live Now - Red
+      iconColor = Colors.red[700]!;
+      iconBgColor = Colors.red[50]!;
+    } else if (status == 'completed') {
+      // Past - Grey
+      iconColor = Colors.grey[600]!;
+      iconBgColor = Colors.grey[200]!;
+    } else if (start != null) {
+      final now = DateTime.now();
+      final todayStart = DateTime(now.year, now.month, now.day);
+      final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);
+      final startOnly = DateTime(start.year, start.month, start.day);
+      
+      if (start.isBefore(todayEnd) && start.isAfter(todayStart) || 
+          (startOnly == todayStart)) {
+        // Today - Orange
+        iconColor = Colors.orange[700]!;
+        iconBgColor = Colors.orange[50]!;
+      } else {
+        // Upcoming - Green
+        iconColor = Colors.green[700]!;
+        iconBgColor = Colors.green[50]!;
+      }
+    } else {
+      // Default - Green for upcoming
+      iconColor = Colors.green[700]!;
+      iconBgColor = Colors.green[50]!;
+    }
     
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -818,11 +880,12 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: isLive ? Colors.red[50] : Colors.blue[50],
+                  color: iconBgColor,
                   borderRadius: BorderRadius.circular(10),
                   border: isLive 
                     ? Border.all(color: Colors.red[300]!, width: 1.5)
@@ -830,7 +893,7 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
                 ),
                 child: Icon(
                   Icons.favorite,
-                  color: isLive ? Colors.red[700] : Colors.blue,
+                  color: iconColor,
                   size: 24,
                 ),
               ),
@@ -838,6 +901,7 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.start,
                   children: [
                     Row(
                       children: [
@@ -907,24 +971,36 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
                     ),
                     const SizedBox(height: 8),
                     Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(Icons.calendar_today, size: 14, color: Colors.grey[600]),
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Icon(Icons.calendar_today, size: 14, color: Colors.grey[600]),
+                        ),
                         const SizedBox(width: 4),
-                        Text(
-                          _formatDate(prayerDate),
-                          style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                        Expanded(
+                          child: Text(
+                            dateDisplay,
+                            style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                          ),
                         ),
                       ],
                     ),
                     const SizedBox(height: 4),
                     // Show time
                     Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(Icons.access_time, size: 14, color: Colors.grey[600]),
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Icon(Icons.access_time, size: 14, color: Colors.grey[600]),
+                        ),
                         const SizedBox(width: 4),
-                        Text(
-                          timeDisplay,
-                          style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                        Expanded(
+                          child: Text(
+                            timeDisplay,
+                            style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                          ),
                         ),
                       ],
                     ),
@@ -933,8 +1009,12 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
                         child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Icon(Icons.location_on, size: 14, color: Colors.grey[600]),
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Icon(Icons.location_on, size: 14, color: Colors.grey[600]),
+                            ),
                             const SizedBox(width: 4),
                             Expanded(
                               child: Text(
@@ -950,8 +1030,12 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
                         child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Icon(Icons.chat, size: 14, color: Colors.green[600]),
+                            Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Icon(Icons.chat, size: 14, color: Colors.green[600]),
+                            ),
                             const SizedBox(width: 4),
                             Expanded(
                               child: Text(
@@ -1293,24 +1377,70 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
     final recurrenceType = event['recurrence_type'] as String?;
     final canEdit = status == 'upcoming';
 
-    String dateTimeDisplay = "TBD";
+    String dateDisplay = "TBD";
+    String timeDisplay = "TBD";
     if (startStr != null && endStr != null) {
       try {
         final start = DateTime.parse(startStr).toLocal();
         final end = DateTime.parse(endStr).toLocal();
         if (start.year == end.year && start.month == end.month && start.day == end.day) {
           // Same day
-          dateTimeDisplay = "${DateFormat('MMM d, y').format(start)} · ${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
+          dateDisplay = DateFormat('MMM d, y').format(start);
+          timeDisplay = "${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
         } else {
           // Multi-day
-          dateTimeDisplay = "${DateFormat('MMM d').format(start)} - ${DateFormat('MMM d, y').format(end)} · ${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
+          dateDisplay = "${DateFormat('MMM d').format(start)} - ${DateFormat('MMM d, y').format(end)}";
+          timeDisplay = "${DateFormat('h:mm a').format(start)} - ${DateFormat('h:mm a').format(end)}";
         }
       } catch (e) {
-        dateTimeDisplay = "$startStr - $endStr";
+        dateDisplay = "TBD";
+        timeDisplay = "$startStr - $endStr";
       }
     }
 
     final isOngoing = status == 'ongoing';
+
+    // Determine icon color based on status
+    Color iconColor;
+    Color iconBgColor;
+    DateTime? start;
+    try {
+      if (startStr != null) {
+        start = DateTime.parse(startStr).toLocal();
+      }
+    } catch (e) {
+      start = null;
+    }
+    
+    if (status == 'ongoing') {
+      // Live Now - Red
+      iconColor = Colors.red[700]!;
+      iconBgColor = Colors.red[50]!;
+    } else if (status == 'completed') {
+      // Past - Grey
+      iconColor = Colors.grey[600]!;
+      iconBgColor = Colors.grey[200]!;
+    } else if (start != null) {
+      final now = DateTime.now();
+      final todayStart = DateTime(now.year, now.month, now.day);
+      final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);
+      final startOnly = DateTime(start.year, start.month, start.day);
+      
+      if (start.isBefore(todayEnd) && start.isAfter(todayStart) || 
+          (startOnly == todayStart)) {
+        // Today - Orange
+        iconColor = Colors.orange[700]!;
+        iconBgColor = Colors.orange[50]!;
+      } else {
+        // Upcoming - Green
+        iconColor = Colors.green[700]!;
+        iconBgColor = Colors.green[50]!;
+      }
+    } else {
+      // Default - Green for upcoming
+      iconColor = Colors.green[700]!;
+      iconBgColor = Colors.green[50]!;
+    }
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -1343,11 +1473,12 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: isOngoing ? Colors.red[50] : Colors.purple[50],
+                  color: iconBgColor,
                   borderRadius: BorderRadius.circular(10),
                   border: isOngoing
                     ? Border.all(color: Colors.red[300]!, width: 1.5)
@@ -1355,7 +1486,7 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
                 ),
                 child: Icon(
                   Icons.event,
-                  color: isOngoing ? Colors.red[700] : Colors.purple,
+                  color: iconColor,
                   size: 24,
                 ),
               ),
@@ -1363,6 +1494,7 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.start,
                   children: [
                     Row(
                       children: [
@@ -1413,12 +1545,33 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
                     ],
                     const SizedBox(height: 8),
                     Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(Icons.calendar_today, size: 14, color: Colors.grey[600]),
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Icon(Icons.calendar_today, size: 14, color: Colors.grey[600]),
+                        ),
                         const SizedBox(width: 4),
                         Expanded(
                           child: Text(
-                            dateTimeDisplay,
+                            dateDisplay,
+                            style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Icon(Icons.access_time, size: 14, color: Colors.grey[600]),
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(
+                            timeDisplay,
                             style: TextStyle(fontSize: 14, color: Colors.grey[600]),
                           ),
                         ),
@@ -1427,8 +1580,12 @@ class _PastorEventsScreenState extends State<PastorEventsScreen> with TickerProv
                     if (location != null) ...[
                       const SizedBox(height: 4),
                       Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Icon(Icons.location_on, size: 14, color: Colors.grey[600]),
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Icon(Icons.location_on, size: 14, color: Colors.grey[600]),
+                          ),
                           const SizedBox(width: 4),
                           Expanded(
                             child: Text(

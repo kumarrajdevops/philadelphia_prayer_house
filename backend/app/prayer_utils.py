@@ -1,53 +1,230 @@
 """
-Utility functions for prayer status computation.
-Status is computed dynamically based on current time vs prayer timestamps (HH:MM precision).
+Utility functions for prayer status computation and occurrence generation.
+Status is computed dynamically based on current time vs prayer datetime range.
+Prayers use DateTime (like events) and support daily/weekly/monthly recurrence.
+Supports multi-day prayers (e.g., 11pm to 1am night prayers).
+3-month rolling generation with max_months limit (same as events).
 """
-from datetime import datetime, date, time
+from datetime import datetime, date, time, timedelta
+from typing import List, Optional, Tuple
+import calendar
 
 
-def compute_prayer_status(prayer_date: date, start_time: time, end_time: time, now: datetime = None) -> str:
+def compute_prayer_status(start_datetime: datetime, end_datetime: datetime, now: datetime = None) -> str:
     """
-    Compute prayer status based on current time vs prayer timestamps (HH:MM precision).
+    Compute prayer status based on current time vs prayer datetime range.
+    Supports multi-day prayers (e.g., 11pm to 1am night prayers).
     
     Returns:
-        - 'upcoming': current_time < start_time
-        - 'inprogress': start_time ≤ current_time < end_time
-        - 'completed': current_time ≥ end_time
+        - 'upcoming': now < start_datetime
+        - 'ongoing': start_datetime ≤ now < end_datetime
+        - 'completed': now ≥ end_datetime
     
     Args:
-        prayer_date: Prayer date
-        start_time: Prayer start time
-        end_time: Prayer end time
+        start_datetime: Prayer start datetime (timezone-aware or naive)
+        end_datetime: Prayer end datetime (timezone-aware or naive)
         now: Current datetime (defaults to datetime.now() if not provided)
     
     Returns:
-        Status string: 'upcoming', 'inprogress', or 'completed'
+        Status string: 'upcoming', 'ongoing', or 'completed'
     """
     if now is None:
-        now = datetime.now()
+        now = datetime.now(start_datetime.tzinfo) if start_datetime.tzinfo else datetime.now()
     
-    # Truncate to minute precision (HH:MM)
-    now_truncated = datetime(now.year, now.month, now.day, now.hour, now.minute)
+    # Ensure timezone-aware comparison
+    if start_datetime.tzinfo is None:
+        # Assume local timezone if not specified
+        start_datetime = start_datetime.replace(tzinfo=now.tzinfo)
+    if end_datetime.tzinfo is None:
+        end_datetime = end_datetime.replace(tzinfo=now.tzinfo)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=start_datetime.tzinfo)
     
-    # Combine prayer date and start time
-    start_datetime = datetime.combine(prayer_date, start_time)
+    # Truncate to minute precision
+    now_truncated = datetime(
+        now.year, now.month, now.day, now.hour, now.minute,
+        tzinfo=now.tzinfo
+    )
     start_truncated = datetime(
         start_datetime.year, start_datetime.month, start_datetime.day,
-        start_datetime.hour, start_datetime.minute
+        start_datetime.hour, start_datetime.minute,
+        tzinfo=start_datetime.tzinfo
     )
-    
-    # Combine prayer date and end time
-    end_datetime = datetime.combine(prayer_date, end_time)
     end_truncated = datetime(
         end_datetime.year, end_datetime.month, end_datetime.day,
-        end_datetime.hour, end_datetime.minute
+        end_datetime.hour, end_datetime.minute,
+        tzinfo=end_datetime.tzinfo
     )
     
     # Determine status based on time comparison
     if now_truncated < start_truncated:
         return 'upcoming'
     elif start_truncated <= now_truncated < end_truncated:
-        return 'inprogress'
+        return 'ongoing'
     else:  # now_truncated >= end_truncated
         return 'completed'
 
+
+def parse_recurrence_days(days_str: Optional[str]) -> List[int]:
+    """
+    Parse recurrence_days string (comma-separated) into list of integers.
+    Example: "0,4" -> [0, 4] (Monday, Friday)
+    
+    Args:
+        days_str: Comma-separated string of day numbers (0=Monday, 6=Sunday)
+    
+    Returns:
+        List of integers representing weekdays
+    """
+    if not days_str:
+        return []
+    return [int(d.strip()) for d in days_str.split(',') if d.strip().isdigit()]
+
+
+def generate_prayer_occurrences(
+    start_datetime: datetime,
+    end_datetime: datetime,
+    recurrence_type: str,
+    recurrence_days: Optional[str] = None,
+    recurrence_end_date: Optional[date] = None,
+    recurrence_count: Optional[int] = None,
+    max_months: int = 3
+) -> List[Tuple[datetime, datetime]]:
+    """
+    Generate prayer occurrences for the next 3 months (or until end condition).
+    Supports daily, weekly, and monthly recurrence (with max_months limit).
+    Supports multi-day prayers (e.g., 11pm to 1am night prayers).
+    
+    Args:
+        start_datetime: First occurrence start datetime
+        end_datetime: First occurrence end datetime
+        recurrence_type: 'none', 'daily', 'weekly', 'monthly'
+        recurrence_days: For weekly: comma-separated days (0=Mon, 6=Sun)
+        recurrence_end_date: Optional end date for recurrence
+        recurrence_count: Optional: end after N occurrences
+        max_months: Maximum months to generate (default: 3)
+    
+    Returns:
+        List of (start_datetime, end_datetime) tuples for each occurrence
+    """
+    occurrences = []
+    
+    # Calculate duration of the prayer
+    duration = end_datetime - start_datetime
+    
+    # Calculate end date for generation (3 months from start)
+    generation_end_date = (start_datetime.date() + timedelta(days=max_months * 30))
+    
+    # Determine actual end date (whichever comes first)
+    actual_end_date = generation_end_date
+    if recurrence_end_date:
+        actual_end_date = min(actual_end_date, recurrence_end_date)
+    
+    if recurrence_type == 'none':
+        # Single prayer
+        occurrences.append((start_datetime, end_datetime))
+    
+    elif recurrence_type == 'daily':
+        current_date = start_datetime.date()
+        current_start = start_datetime
+        count = 0
+        
+        while current_date <= actual_end_date:
+            if recurrence_count and count >= recurrence_count:
+                break
+            
+            current_end = current_start + duration
+            occurrences.append((current_start, current_end))
+            
+            current_date += timedelta(days=1)
+            current_start = datetime.combine(current_date, current_start.time())
+            if start_datetime.tzinfo:
+                current_start = current_start.replace(tzinfo=start_datetime.tzinfo)
+            count += 1
+    
+    elif recurrence_type == 'weekly':
+        days = parse_recurrence_days(recurrence_days)
+        if not days:
+            # Default to same weekday as start
+            days = [start_datetime.weekday()]
+        
+        current_date = start_datetime.date()
+        count = 0
+        
+        while current_date <= actual_end_date:
+            if recurrence_count and count >= recurrence_count:
+                break
+            
+            # Check each day in the week
+            week_start = current_date - timedelta(days=current_date.weekday())
+            for day_offset in days:
+                occurrence_date = week_start + timedelta(days=day_offset)
+                
+                if occurrence_date < start_datetime.date():
+                    continue
+                if occurrence_date > actual_end_date:
+                    break
+                if recurrence_count and count >= recurrence_count:
+                    break
+                
+                occurrence_start = datetime.combine(occurrence_date, start_datetime.time())
+                if start_datetime.tzinfo:
+                    occurrence_start = occurrence_start.replace(tzinfo=start_datetime.tzinfo)
+                occurrence_end = occurrence_start + duration
+                
+                occurrences.append((occurrence_start, occurrence_end))
+                count += 1
+            
+            # Move to next week
+            current_date += timedelta(days=7)
+    
+    elif recurrence_type == 'monthly':
+        current_date = start_datetime.date()
+        count = 0
+        
+        while current_date <= actual_end_date:
+            if recurrence_count and count >= recurrence_count:
+                break
+            
+            occurrence_start = datetime.combine(current_date, start_datetime.time())
+            if start_datetime.tzinfo:
+                occurrence_start = occurrence_start.replace(tzinfo=start_datetime.tzinfo)
+            occurrence_end = occurrence_start + duration
+            
+            occurrences.append((occurrence_start, occurrence_end))
+            count += 1
+            
+            # Move to next month (same day)
+            if current_date.month == 12:
+                current_date = current_date.replace(year=current_date.year + 1, month=1)
+            else:
+                # Handle month-end edge cases (e.g., Jan 31 -> Feb 28)
+                try:
+                    current_date = current_date.replace(month=current_date.month + 1)
+                except ValueError:
+                    # Day doesn't exist in next month, use last day of month
+                    last_day = calendar.monthrange(current_date.year, current_date.month + 1)[1]
+                    current_date = current_date.replace(month=current_date.month + 1, day=last_day)
+    
+    return occurrences
+
+
+def get_recurrence_label(recurrence_type: Optional[str]) -> Optional[str]:
+    """
+    Get human-readable recurrence label.
+    
+    Args:
+        recurrence_type: 'none', 'daily', 'weekly', 'monthly'
+    
+    Returns:
+        Label string or None
+    """
+    if not recurrence_type or recurrence_type == 'none':
+        return None
+    
+    labels = {
+        'daily': 'Daily',
+        'weekly': 'Weekly',
+        'monthly': 'Monthly'
+    }
+    return labels.get(recurrence_type)

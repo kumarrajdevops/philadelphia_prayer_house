@@ -64,11 +64,122 @@ class PrayerResponse(PrayerCreate):
     Response schema returned by API.
     """
     id: int
-    status: str  # upcoming, inprogress, completed
+    status: str  # upcoming, ongoing, completed
     created_by: int  # Now required, not optional
 
     class Config:
         from_attributes = True
+
+
+# =========================
+# Prayer Series Schemas (Recurring Prayers)
+# =========================
+
+class PrayerSeriesCreate(BaseModel):
+    """
+    Input schema for creating a prayer series.
+    Supports multi-day prayers (e.g., 11pm to 1am night prayers).
+    """
+    title: str
+    prayer_type: str  # "online" or "offline"
+    location: Optional[str] = None  # Required for offline
+    join_info: Optional[str] = None  # Required for online
+    start_datetime: datetime  # First occurrence start datetime (supports multi-day)
+    end_datetime: datetime  # First occurrence end datetime (supports multi-day)
+    recurrence_type: str = "none"  # none, daily, weekly, monthly
+    recurrence_days: Optional[str] = None  # For weekly: comma-separated days (0=Mon, 6=Sun)
+    recurrence_end_date: Optional[date] = None
+    recurrence_count: Optional[int] = None
+
+
+class PrayerSeriesUpdate(BaseModel):
+    """
+    Input schema for updating a prayer series.
+    """
+    title: str
+    prayer_type: str
+    location: Optional[str] = None
+    join_info: Optional[str] = None
+    recurrence_type: str
+    recurrence_days: Optional[str] = None
+    recurrence_end_date: Optional[date] = None
+    recurrence_count: Optional[int] = None
+    is_active: bool = True
+
+
+class PrayerOccurrenceResponse(BaseModel):
+    """
+    Response schema for prayer occurrence (what everyone sees).
+    Supports multi-day prayers (e.g., 11pm to 1am night prayers).
+    """
+    id: int
+    prayer_series_id: int
+    title: str
+    prayer_type: str
+    location: Optional[str]
+    join_info: Optional[str]
+    start_datetime: datetime  # Start datetime (supports multi-day)
+    end_datetime: datetime  # End datetime (supports multi-day)
+    status: str  # upcoming, ongoing, completed
+    recurrence_type: Optional[str]  # For label display
+
+    class Config:
+        from_attributes = True
+
+
+class PrayerOccurrenceUpdate(BaseModel):
+    """
+    Input schema for updating a single prayer occurrence.
+    Supports multi-day prayers (e.g., 11pm to 1am night prayers).
+    """
+    title: str
+    prayer_type: str
+    location: Optional[str] = None
+    join_info: Optional[str] = None
+    start_datetime: datetime  # Start datetime (supports multi-day)
+    end_datetime: datetime  # End datetime (supports multi-day)
+
+
+class PrayerSeriesResponse(BaseModel):
+    """
+    Response schema for prayer series (pastor view).
+    Supports multi-day prayers (e.g., 11pm to 1am night prayers).
+    """
+    id: int
+    title: str
+    prayer_type: str
+    location: Optional[str]
+    join_info: Optional[str]
+    recurrence_type: str
+    recurrence_days: Optional[str]
+    recurrence_end_date: Optional[date]
+    recurrence_count: Optional[int]
+    start_datetime: datetime  # First occurrence start datetime (supports multi-day)
+    end_datetime: datetime  # First occurrence end datetime (supports multi-day)
+    created_by: int
+    is_active: bool
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class PrayerPreviewItem(BaseModel):
+    """
+    Preview item for generated prayer occurrences.
+    Supports multi-day prayers (e.g., 11pm to 1am night prayers).
+    """
+    start_datetime: datetime  # Start datetime (supports multi-day)
+    end_datetime: datetime  # End datetime (supports multi-day)
+    date_label: str  # Human-readable date string
+
+
+class PrayerCreatePreview(BaseModel):
+    """
+    Preview of prayer occurrences that will be generated.
+    """
+    occurrences: List[PrayerPreviewItem]
 
 
 # =========================

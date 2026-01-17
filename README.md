@@ -1198,6 +1198,18 @@ Private project for Philadelphia Prayer House
 ## 📝 Recent Updates
 
 ### Latest Features (2026-01-18)
+- ✅ **UI Enhancements - Status-Based Icon Colors**
+  - Icon colors now reflect status across all pages:
+    - **Live Now (ongoing)**: Red - High attention, immediate
+    - **Today**: Orange - Active soon, happening today
+    - **Upcoming**: Green - Scheduled and confirmed
+    - **Past (completed)**: Grey - Diminished, history
+  - Applied to:
+    - Pastor Panel: Events page and Prayers page (Today/Upcoming/Past tabs)
+    - Member Panel: Events page and Prayers page (Today/Upcoming/Past tabs)
+    - Home Pages: Both Pastor and Member home screens
+  - Consistent visual language across all screens for better status recognition
+
 - ✅ **Events System** - Complete implementation
   - Backend: Event series and occurrences tables with recurrence support
   - API endpoints: Create, list, update, delete events with "This and Future" option
