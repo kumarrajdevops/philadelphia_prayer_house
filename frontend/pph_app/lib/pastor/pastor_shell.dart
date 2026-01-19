@@ -6,6 +6,7 @@ import 'pastor_home_screen.dart';
 import 'pastor_events_screen.dart';
 import 'pastor_members_screen.dart';
 import 'pastor_gallery_screen.dart';
+import 'pastor_prayer_requests_screen.dart';
 
 class PastorShell extends StatefulWidget {
   const PastorShell({super.key});
@@ -152,6 +153,19 @@ class _PastorShellState extends State<PastorShell> {
               // TODO: Navigate to calendar
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text("Calendar - Coming soon")),
+              );
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.favorite),
+            title: const Text("Prayer Requests"),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const PastorPrayerRequestsScreen(),
+                ),
               );
             },
           ),

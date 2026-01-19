@@ -718,6 +718,7 @@ class _MemberScheduleScreenState extends State<MemberScheduleScreen> with Ticker
                 _buildPastTab(),
               ],
             ),
+      extendBody: true,
     );
   }
 }

@@ -7,10 +7,13 @@ import '../auth/login_screen.dart';
 import '../auth/auth_service.dart';
 import '../services/prayer_service.dart';
 import '../services/event_service.dart';
+import '../services/engagement_service.dart';
 import 'member_prayer_details_screen.dart';
 import 'member_event_details_screen.dart';
 import 'member_schedule_screen.dart';
 import 'member_events_screen.dart';
+import 'member_favorites_screen.dart';
+import 'member_reminders_screen.dart';
 
 class MemberHomeScreen extends StatefulWidget {
   const MemberHomeScreen({super.key});
@@ -26,6 +29,8 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
   List<Map<String, dynamic>> _livePrayers = [];
   List<Map<String, dynamic>> _todayEvents = [];
   List<Map<String, dynamic>> _liveEvents = [];
+  Set<int> _favoritePrayerSeriesIds = {}; // Track favorited prayer series IDs
+  Set<int> _favoriteEventSeriesIds = {}; // Track favorited event series IDs
   Timer? _refreshTimer;
 
   @override
@@ -35,6 +40,7 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
     _loadMemberInfo();
     _loadTodayPrayers();
     _loadTodayEvents();
+    _loadFavorites();
     _startAutoRefresh();
   }
 
@@ -74,6 +80,29 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
     });
   }
 
+  String _computeStatus(String? startStr, String? endStr) {
+    if (startStr == null || endStr == null) {
+      return 'upcoming';
+    }
+    
+    try {
+      final now = DateTime.now().toUtc();
+      final start = DateTime.parse(startStr).toUtc();
+      final end = DateTime.parse(endStr).toUtc();
+      
+      if (now.isBefore(start)) {
+        return 'upcoming';
+      } else if (now.isBefore(end)) {
+        return 'ongoing';
+      } else {
+        return 'completed';
+      }
+    } catch (e) {
+      // Fallback to status from object if parsing fails
+      return 'upcoming';
+    }
+  }
+
   Future<void> _loadTodayPrayers({bool silent = false}) async {
     if (!silent) {
       setState(() => _loading = true);
@@ -84,6 +113,14 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
       final todayList = await PrayerService.getPrayerOccurrences(tab: "today");
       
       if (mounted) {
+        // Compute status dynamically and update in the list
+        for (var prayer in todayList) {
+          final startStr = prayer['start_datetime'] as String?;
+          final endStr = prayer['end_datetime'] as String?;
+          final computedStatus = _computeStatus(startStr, endStr);
+          prayer['status'] = computedStatus;
+        }
+
         // Sort by start_datetime (ascending - earliest first)
         todayList.sort((a, b) {
           final timeA = a['start_datetime'] as String? ?? '';
@@ -91,7 +128,7 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
           return timeA.compareTo(timeB);
         });
 
-        // Find all live prayers (ongoing)
+        // Find all live prayers (ongoing) - using computed status
         final livePrayers = todayList.where((p) {
           return (p['status'] as String? ?? 'upcoming').toLowerCase() == 'ongoing';
         }).toList()
@@ -134,20 +171,27 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
         final todayList = events.where((event) {
           final startStr = event['start_datetime'] as String?;
           final endStr = event['end_datetime'] as String?;
-          final status = (event['status'] as String? ?? 'upcoming').toLowerCase();
           
           if (startStr == null || endStr == null) return false;
-          
-          // Exclude completed events
-          if (status == 'completed') return false;
           
           try {
             final start = DateTime.parse(startStr).toLocal();
             final end = DateTime.parse(endStr).toLocal();
             
             // Show if ongoing OR starts today (but not completed)
-            return (start.isBefore(todayEnd) && end.isAfter(todayStart)) ||
+            final isToday = (start.isBefore(todayEnd) && end.isAfter(todayStart)) ||
                    (start.isAfter(todayStart) && start.isBefore(todayEnd));
+            
+            // Compute status dynamically
+            final computedStatus = _computeStatus(startStr, endStr);
+            
+            // Exclude completed events
+            if (computedStatus == 'completed') return false;
+            
+            // Update status in event object
+            event['status'] = computedStatus;
+            
+            return isToday;
           } catch (e) {
             return false;
           }
@@ -158,7 +202,7 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
             return timeA.compareTo(timeB);
           });
 
-        // Find all live/ongoing events
+        // Find all live/ongoing events - using computed status
         final liveEvents = todayList.where((e) {
           return (e['status'] as String? ?? 'upcoming').toLowerCase() == 'ongoing';
         }).toList()
@@ -190,6 +234,103 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
     }
   }
 
+  Future<void> _loadFavorites() async {
+    try {
+      final favorites = await EngagementService.getFavorites();
+      if (mounted) {
+        setState(() {
+          _favoritePrayerSeriesIds = favorites
+              .where((f) => f['prayer_series_id'] != null)
+              .map((f) => f['prayer_series_id'] as int)
+              .toSet();
+          _favoriteEventSeriesIds = favorites
+              .where((f) => f['event_series_id'] != null)
+              .map((f) => f['event_series_id'] as int)
+              .toSet();
+        });
+      }
+    } catch (e) {
+      // Silent failure - favorites are optional
+      print("Failed to load favorites: $e");
+    }
+  }
+
+  Future<void> _toggleFavoritePrayer(int prayerSeriesId, bool isCurrentlyFavorited) async {
+    try {
+      if (isCurrentlyFavorited) {
+        // Remove from favorites - find the favorite ID first
+        final favorites = await EngagementService.getFavorites();
+        final favorite = favorites.firstWhere(
+          (f) => f['prayer_series_id'] == prayerSeriesId,
+          orElse: () => <String, dynamic>{},
+        );
+        if (favorite.isNotEmpty && favorite['id'] != null) {
+          await EngagementService.removeFavorite(favorite['id'] as int);
+          if (mounted) {
+            setState(() {
+              _favoritePrayerSeriesIds.remove(prayerSeriesId);
+            });
+          }
+        }
+      } else {
+        // Add to favorites
+        await EngagementService.addFavorite(prayerSeriesId: prayerSeriesId);
+        if (mounted) {
+          setState(() {
+            _favoritePrayerSeriesIds.add(prayerSeriesId);
+          });
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Failed to update favorite: ${e.toString()}"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _toggleFavoriteEvent(int eventSeriesId, bool isCurrentlyFavorited) async {
+    try {
+      if (isCurrentlyFavorited) {
+        // Remove from favorites - find the favorite ID first
+        final favorites = await EngagementService.getFavorites();
+        final favorite = favorites.firstWhere(
+          (f) => f['event_series_id'] == eventSeriesId,
+          orElse: () => <String, dynamic>{},
+        );
+        if (favorite.isNotEmpty && favorite['id'] != null) {
+          await EngagementService.removeFavorite(favorite['id'] as int);
+          if (mounted) {
+            setState(() {
+              _favoriteEventSeriesIds.remove(eventSeriesId);
+            });
+          }
+        }
+      } else {
+        // Add to favorites
+        await EngagementService.addFavorite(eventSeriesId: eventSeriesId);
+        if (mounted) {
+          setState(() {
+            _favoriteEventSeriesIds.add(eventSeriesId);
+          });
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Failed to update favorite: ${e.toString()}"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   String _getGreeting() {
     final hour = DateTime.now().hour;
     if (hour < 12) return "Good Morning";
@@ -213,7 +354,23 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
     return timeStr;
   }
 
-  Future<void> _openGoogleMaps(String location) async {
+  Future<void> _openGoogleMaps(String location, {int? prayerOccurrenceId, int? eventOccurrenceId}) async {
+    // Record attendance FIRST (before attempting to open URL)
+    // This ensures attendance is tracked even if URL opening fails
+    if (prayerOccurrenceId != null || eventOccurrenceId != null) {
+      try {
+        await EngagementService.recordAttendance(
+          prayerOccurrenceId: prayerOccurrenceId,
+          eventOccurrenceId: eventOccurrenceId,
+        );
+        // Successfully recorded - no UI message needed (silent)
+      } catch (e) {
+        // Silent failure - don't interrupt user flow, but log for debugging
+        print("Failed to record attendance: $e");
+      }
+    }
+
+    // Now try to open Google Maps (independent of attendance recording)
     try {
       final encodedLocation = Uri.encodeComponent(location);
       final googleMapsUrl = Uri.parse('https://www.google.com/maps/search/?api=1&query=$encodedLocation');
@@ -240,7 +397,23 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
     }
   }
 
-  Future<void> _openWhatsApp(String joinInfo) async {
+  Future<void> _openWhatsApp(String joinInfo, {int? prayerOccurrenceId, int? eventOccurrenceId}) async {
+    // Record attendance FIRST (before attempting to open URL)
+    // This ensures attendance is tracked even if URL opening fails
+    if (prayerOccurrenceId != null || eventOccurrenceId != null) {
+      try {
+        await EngagementService.recordAttendance(
+          prayerOccurrenceId: prayerOccurrenceId,
+          eventOccurrenceId: eventOccurrenceId,
+        );
+        // Successfully recorded - no UI message needed (silent)
+      } catch (e) {
+        // Silent failure - don't interrupt user flow, but log for debugging
+        print("Failed to record attendance: $e");
+      }
+    }
+
+    // Now try to open WhatsApp (independent of attendance recording)
     try {
       Uri whatsappUrl;
       final cleanInfo = joinInfo.trim();
@@ -507,6 +680,9 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
     final prayerType = (prayer['prayer_type'] as String? ?? 'offline').toLowerCase();
     final location = prayer['location'] as String?;
     final joinInfo = prayer['join_info'] as String?;
+    final prayerOccurrenceId = prayer['id'] as int?;
+    final prayerSeriesId = prayer['prayer_series_id'] as int?;
+    final isFavorited = prayerSeriesId != null && _favoritePrayerSeriesIds.contains(prayerSeriesId);
 
     String timeDisplay = "TBD";
     if (startStr != null && endStr != null) {
@@ -580,6 +756,19 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
                                 ),
                               ),
                             ),
+                            if (prayerSeriesId != null)
+                              GestureDetector(
+                                onTap: () => _toggleFavoritePrayer(prayerSeriesId, isFavorited),
+                                child: Container(
+                                  margin: const EdgeInsets.only(right: 8),
+                                  padding: const EdgeInsets.all(4),
+                                  child: Icon(
+                                    isFavorited ? Icons.star : Icons.star_border,
+                                    color: isFavorited ? Colors.amber : Colors.grey[600],
+                                    size: 24,
+                                  ),
+                                ),
+                              ),
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                               decoration: BoxDecoration(
@@ -671,7 +860,7 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
-                    onPressed: () => _openWhatsApp(joinInfo),
+                    onPressed: () => _openWhatsApp(joinInfo, prayerOccurrenceId: prayerOccurrenceId),
                     icon: const Icon(Icons.chat, size: 20),
                     label: const Text(
                       "JOIN NOW",
@@ -715,7 +904,7 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
                     SizedBox(
                       width: double.infinity,
                       child: OutlinedButton.icon(
-                        onPressed: () => _openGoogleMaps(location),
+                        onPressed: () => _openGoogleMaps(location, prayerOccurrenceId: prayerOccurrenceId),
                         icon: const Icon(Icons.map),
                         label: const Text("Open in Google Maps"),
                         style: OutlinedButton.styleFrom(
@@ -742,6 +931,8 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
     final startStr = event['start_datetime'] as String?;
     final endStr = event['end_datetime'] as String?;
     final location = event['location'] as String?;
+    final eventSeriesId = event['event_series_id'] as int?;
+    final isFavorited = eventSeriesId != null && _favoriteEventSeriesIds.contains(eventSeriesId);
 
     String timeDisplay = "TBD";
     if (startStr != null && endStr != null) {
@@ -815,6 +1006,19 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
                                 ),
                               ),
                             ),
+                            if (eventSeriesId != null)
+                              GestureDetector(
+                                onTap: () => _toggleFavoriteEvent(eventSeriesId, isFavorited),
+                                child: Container(
+                                  margin: const EdgeInsets.only(right: 8),
+                                  padding: const EdgeInsets.all(4),
+                                  child: Icon(
+                                    isFavorited ? Icons.star : Icons.star_border,
+                                    color: isFavorited ? Colors.amber : Colors.grey[600],
+                                    size: 24,
+                                  ),
+                                ),
+                              ),
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                               decoration: BoxDecoration(
@@ -1064,6 +1268,8 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
     final endStr = event['end_datetime'] as String?;
     final status = (event['status'] as String? ?? 'upcoming').toLowerCase();
     final location = event['location'] as String?;
+    final eventSeriesId = event['event_series_id'] as int?;
+    final isFavorited = eventSeriesId != null && _favoriteEventSeriesIds.contains(eventSeriesId);
 
     // Determine icon color based on status
     Color iconColor;
@@ -1146,6 +1352,19 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
                               ),
                             ),
                           ),
+                          if (eventSeriesId != null)
+                            GestureDetector(
+                              onTap: () => _toggleFavoriteEvent(eventSeriesId, isFavorited),
+                              child: Container(
+                                margin: const EdgeInsets.only(right: 8),
+                                padding: const EdgeInsets.all(4),
+                                child: Icon(
+                                  isFavorited ? Icons.star : Icons.star_border,
+                                  color: isFavorited ? Colors.amber : Colors.grey[600],
+                                  size: 20,
+                                ),
+                              ),
+                            ),
                           const SizedBox(width: 8),
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -1217,6 +1436,8 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
     final prayerType = (prayer['prayer_type'] as String? ?? 'offline').toLowerCase();
     final location = prayer['location'] as String?;
     final status = (prayer['status'] as String? ?? 'upcoming').toLowerCase();
+    final prayerSeriesId = prayer['prayer_series_id'] as int?;
+    final isFavorited = prayerSeriesId != null && _favoritePrayerSeriesIds.contains(prayerSeriesId);
 
     // Determine icon color based on status
     Color iconColor;
@@ -1299,6 +1520,19 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
                               ),
                             ),
                           ),
+                          if (prayerSeriesId != null)
+                            GestureDetector(
+                              onTap: () => _toggleFavoritePrayer(prayerSeriesId, isFavorited),
+                              child: Container(
+                                margin: const EdgeInsets.only(right: 8),
+                                padding: const EdgeInsets.all(4),
+                                child: Icon(
+                                  isFavorited ? Icons.star : Icons.star_border,
+                                  color: isFavorited ? Colors.amber : Colors.grey[600],
+                                  size: 20,
+                                ),
+                              ),
+                            ),
                           const SizedBox(width: 8),
                           // Prayer Type Badge
                           if (prayerType == 'online')
@@ -1547,6 +1781,74 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
                     child: Card(
                       child: InkWell(
                         onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const MemberFavoritesScreen(),
+                            ),
+                          );
+                        },
+                        borderRadius: BorderRadius.circular(12),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            children: [
+                              Icon(Icons.favorite, color: Colors.red[700], size: 32),
+                              const SizedBox(height: 8),
+                              const Text(
+                                "Favorites",
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: Card(
+                      child: InkWell(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const MemberRemindersScreen(),
+                            ),
+                          );
+                        },
+                        borderRadius: BorderRadius.circular(12),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            children: [
+                              Icon(Icons.notifications, color: Colors.green[700], size: 32),
+                              const SizedBox(height: 8),
+                              const Text(
+                                "Reminders",
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Card(
+                      child: InkWell(
+                        onTap: () {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
                               content: Text("Song Lyrics - Coming soon"),
@@ -1572,6 +1874,10 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
                         ),
                       ),
                     ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: SizedBox(), // Empty space to maintain grid alignment
                   ),
                 ],
               ),
@@ -1681,6 +1987,32 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
             },
           ),
           ListTile(
+            leading: const Icon(Icons.favorite),
+            title: const Text("My Favorites"),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const MemberFavoritesScreen(),
+                ),
+              );
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.notifications),
+            title: const Text("My Reminders"),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const MemberRemindersScreen(),
+                ),
+              );
+            },
+          ),
+          ListTile(
             leading: const Icon(Icons.help_outline),
             title: const Text("Help & Support"),
             onTap: () {
@@ -1745,6 +2077,7 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
                 ),
               ),
             ),
+      extendBody: true,
     );
   }
 }

@@ -195,3 +195,141 @@ class PrayerOccurrence(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     series = relationship("PrayerSeries", back_populates="occurrences")
+
+
+# =========================
+# Engagement & Participation Layer
+# =========================
+
+class Attendance(Base):
+    """
+    Attendance (Passive Participation Tracking)
+    Silent tracking when members tap "JOIN NOW".
+    No UI friction - just records participation.
+    """
+    __tablename__ = "attendance"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    prayer_occurrence_id = Column(
+        Integer,
+        ForeignKey("prayer_occurrences.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    event_occurrence_id = Column(
+        Integer,
+        ForeignKey("event_occurrences.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    joined_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+    __table_args__ = (
+        # Ensure at least one occurrence is specified
+        Index("ix_attendance_user_prayer", "user_id", "prayer_occurrence_id"),
+        Index("ix_attendance_user_event", "user_id", "event_occurrence_id"),
+    )
+
+
+class Favorite(Base):
+    """
+    Favorites (Personal Layer)
+    Allows members to favorite prayer/event series for quick access.
+    """
+    __tablename__ = "favorites"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    prayer_series_id = Column(
+        Integer,
+        ForeignKey("prayer_series.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    event_series_id = Column(
+        Integer,
+        ForeignKey("event_series.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        # Ensure at least one series is specified and unique per user
+        Index("ix_favorites_user_prayer", "user_id", "prayer_series_id", unique=True),
+        Index("ix_favorites_user_event", "user_id", "event_series_id", unique=True),
+    )
+
+
+class ReminderSetting(Base):
+    """
+    Reminder Settings (Lightweight)
+    Local notifications only (no backend cron, no SMS yet).
+    Toggle for 15 mins before and 5 mins before.
+    """
+    __tablename__ = "reminder_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    prayer_series_id = Column(
+        Integer,
+        ForeignKey("prayer_series.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    event_series_id = Column(
+        Integer,
+        ForeignKey("event_series.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    remind_before_minutes = Column(Integer, nullable=False)  # 15 or 5
+    is_enabled = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    __table_args__ = (
+        # Ensure at least one series is specified and unique per user/series/reminder_minutes
+        Index("ix_reminder_user_prayer", "user_id", "prayer_series_id", "remind_before_minutes", unique=True),
+        Index("ix_reminder_user_event", "user_id", "event_series_id", "remind_before_minutes", unique=True),
+    )
+
+
+class PrayerRequest(Base):
+    """
+    Prayer Requests (Member → Pastor)
+    v1.1: Public/Private prayer types with pastoral privacy rules.
+    Pastor always sees member identity. Public visibility respects request type.
+    """
+    __tablename__ = "prayer_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,  # Always required - pastor must know who sent it
+        index=True,
+    )
+    request_text = Column(String, nullable=False)
+    request_type = Column(String, default="public", nullable=False, index=True)  # public, private
+    status = Column(String, default="submitted", nullable=False, index=True)  # submitted, prayed, archived
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    prayed_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    archived_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())

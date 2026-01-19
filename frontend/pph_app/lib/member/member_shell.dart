@@ -5,6 +5,7 @@ import '../auth/auth_service.dart';
 import 'member_home_screen.dart';
 import 'member_schedule_screen.dart';
 import 'member_events_screen.dart';
+import 'member_prayer_requests_screen.dart';
 
 class MemberShell extends StatefulWidget {
   const MemberShell({super.key});
@@ -26,12 +27,7 @@ class _MemberShellState extends State<MemberShell> {
       const MemberHomeScreen(),
       const MemberScheduleScreen(),
       const MemberEventsScreen(),
-      // Placeholder for Requests screen
-      const Scaffold(
-        body: Center(
-          child: Text("Requests - Coming soon"),
-        ),
-      ),
+      const MemberPrayerRequestsScreen(),
     ];
     _loadMemberInfo();
   }

@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, status, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 import logging
 
 from .database import SessionLocal
-from .models import User, Prayer, EventSeries, EventOccurrence, PrayerSeries, PrayerOccurrence
+from .models import User, Prayer, EventSeries, EventOccurrence, PrayerSeries, PrayerOccurrence, Attendance, Favorite, ReminderSetting, PrayerRequest
 from .schemas import (
     UserCreate,
     UserResponse,
@@ -24,8 +26,18 @@ from .schemas import (
     EventOccurrenceUpdate,
     EventCreatePreview,
     EventPreviewItem,
+    AttendanceCreate,
+    AttendanceResponse,
+    FavoriteCreate,
+    FavoriteResponse,
+    ReminderSettingCreate,
+    ReminderSettingUpdate,
+    ReminderSettingResponse,
+    PrayerRequestCreate,
+    PrayerRequestUpdate,
+    PrayerRequestResponse,
 )
-from .deps import get_db, require_pastor
+from .deps import get_db, require_pastor, get_current_active_user
 from .prayer_utils import (
     compute_prayer_status,
     generate_prayer_occurrences,
@@ -37,7 +49,7 @@ from .event_utils import (
     get_recurrence_label,
 )
 from datetime import datetime, date, timedelta, timezone
-from typing import Optional
+from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -1186,3 +1198,601 @@ def delete_event_occurrence(
     db.commit()
     logger.info(f"Event occurrence {occurrence_id} deleted successfully by user {current_user.id}")
     return None
+
+
+# =========================
+# Engagement & Participation Routes
+# =========================
+
+@router.post("/attendance", response_model=AttendanceResponse, status_code=status.HTTP_201_CREATED)
+def record_attendance(
+    attendance: AttendanceCreate,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Record attendance when member taps "JOIN NOW".
+    Silent, non-intrusive tracking - no UI friction.
+    Either prayer_occurrence_id or event_occurrence_id must be provided.
+    """
+    if not attendance.prayer_occurrence_id and not attendance.event_occurrence_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either prayer_occurrence_id or event_occurrence_id must be provided"
+        )
+    
+    # Validate that the occurrence exists
+    if attendance.prayer_occurrence_id:
+        prayer_occ = db.query(PrayerOccurrence).filter(
+            PrayerOccurrence.id == attendance.prayer_occurrence_id
+        ).first()
+        if not prayer_occ:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Prayer occurrence not found"
+            )
+    else:
+        event_occ = db.query(EventOccurrence).filter(
+            EventOccurrence.id == attendance.event_occurrence_id
+        ).first()
+        if not event_occ:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Event occurrence not found"
+            )
+    
+    # Check if attendance already exists for this user + occurrence
+    # Prevent duplicate attendance records
+    existing_attendance = None
+    if attendance.prayer_occurrence_id:
+        existing_attendance = db.query(Attendance).filter(
+            Attendance.user_id == current_user.id,
+            Attendance.prayer_occurrence_id == attendance.prayer_occurrence_id
+        ).first()
+    else:
+        existing_attendance = db.query(Attendance).filter(
+            Attendance.user_id == current_user.id,
+            Attendance.event_occurrence_id == attendance.event_occurrence_id
+        ).first()
+    
+    # If attendance already exists, return existing record (idempotent)
+    if existing_attendance:
+        return existing_attendance
+    
+    # Create new attendance record
+    try:
+        db_attendance = Attendance(
+            user_id=current_user.id,
+            prayer_occurrence_id=attendance.prayer_occurrence_id,
+            event_occurrence_id=attendance.event_occurrence_id,
+        )
+        db.add(db_attendance)
+        db.commit()
+        db.refresh(db_attendance)
+        return db_attendance
+    except IntegrityError as e:
+        # Handle race condition: if duplicate created between check and insert
+        db.rollback()
+        # Try to get the existing record
+        if attendance.prayer_occurrence_id:
+            existing_attendance = db.query(Attendance).filter(
+                Attendance.user_id == current_user.id,
+                Attendance.prayer_occurrence_id == attendance.prayer_occurrence_id
+            ).first()
+        else:
+            existing_attendance = db.query(Attendance).filter(
+                Attendance.user_id == current_user.id,
+                Attendance.event_occurrence_id == attendance.event_occurrence_id
+            ).first()
+        
+        if existing_attendance:
+            return existing_attendance
+        else:
+            # Should not happen, but re-raise if it does
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create attendance record due to duplicate constraint"
+            )
+
+
+@router.post("/favorites", response_model=FavoriteResponse, status_code=status.HTTP_201_CREATED)
+def add_favorite(
+    favorite: FavoriteCreate,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Add a prayer or event series to favorites.
+    Either prayer_series_id or event_series_id must be provided.
+    """
+    if not favorite.prayer_series_id and not favorite.event_series_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either prayer_series_id or event_series_id must be provided"
+        )
+    
+    # Check if already favorited
+    query = db.query(Favorite).filter(Favorite.user_id == current_user.id)
+    if favorite.prayer_series_id:
+        existing = query.filter(Favorite.prayer_series_id == favorite.prayer_series_id).first()
+    else:
+        existing = query.filter(Favorite.event_series_id == favorite.event_series_id).first()
+    
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Already favorited"
+        )
+    
+    # Validate series exists
+    if favorite.prayer_series_id:
+        series = db.query(PrayerSeries).filter(PrayerSeries.id == favorite.prayer_series_id).first()
+        if not series:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prayer series not found")
+    else:
+        series = db.query(EventSeries).filter(EventSeries.id == favorite.event_series_id).first()
+        if not series:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event series not found")
+    
+    db_favorite = Favorite(
+        user_id=current_user.id,
+        prayer_series_id=favorite.prayer_series_id,
+        event_series_id=favorite.event_series_id,
+    )
+    db.add(db_favorite)
+    db.commit()
+    db.refresh(db_favorite)
+    return db_favorite
+
+
+@router.delete("/favorites/{favorite_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_favorite(
+    favorite_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Remove a favorite.
+    Users can only remove their own favorites.
+    """
+    favorite = db.query(Favorite).filter(
+        Favorite.id == favorite_id,
+        Favorite.user_id == current_user.id
+    ).first()
+    
+    if not favorite:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Favorite not found"
+        )
+    
+    db.delete(favorite)
+    db.commit()
+    return None
+
+
+@router.get("/favorites", response_model=list[FavoriteResponse])
+def list_favorites(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    List all favorites for the current user.
+    Automatically removes favorites for prayer/event series that have no upcoming occurrences
+    (all completed/ended) to prevent flooding.
+    """
+    now = datetime.now(timezone.utc)
+    favorites = db.query(Favorite).filter(
+        Favorite.user_id == current_user.id
+    ).order_by(Favorite.created_at.desc()).all()
+    
+    valid_favorites = []
+    favorites_to_delete = []
+    
+    for favorite in favorites:
+        is_valid = False
+        
+        if favorite.prayer_series_id:
+            # Check if prayer series has any upcoming occurrences
+            upcoming_count = db.query(PrayerOccurrence).filter(
+                PrayerOccurrence.prayer_series_id == favorite.prayer_series_id,
+                PrayerOccurrence.end_datetime >= now  # Not completed yet
+            ).count()
+            
+            if upcoming_count > 0:
+                is_valid = True
+            else:
+                favorites_to_delete.append(favorite)
+        
+        elif favorite.event_series_id:
+            # Check if event series has any upcoming occurrences
+            upcoming_count = db.query(EventOccurrence).filter(
+                EventOccurrence.event_series_id == favorite.event_series_id,
+                EventOccurrence.end_datetime >= now  # Not completed yet
+            ).count()
+            
+            if upcoming_count > 0:
+                is_valid = True
+            else:
+                favorites_to_delete.append(favorite)
+        
+        if is_valid:
+            valid_favorites.append(favorite)
+    
+    # Delete favorites for completed series
+    if favorites_to_delete:
+        for favorite in favorites_to_delete:
+            db.delete(favorite)
+        db.commit()
+        logger.info(f"Cleaned up {len(favorites_to_delete)} favorites for completed series for user {current_user.id}")
+    
+    return valid_favorites
+
+
+@router.post("/reminders", response_model=ReminderSettingResponse, status_code=status.HTTP_201_CREATED)
+def create_reminder_setting(
+    reminder: ReminderSettingCreate,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Create a reminder setting for a prayer or event series.
+    remind_before_minutes must be 15 or 5.
+    """
+    if reminder.remind_before_minutes not in [15, 5]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="remind_before_minutes must be 15 or 5"
+        )
+    
+    if not reminder.prayer_series_id and not reminder.event_series_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either prayer_series_id or event_series_id must be provided"
+        )
+    
+    # Check if already exists
+    query = db.query(ReminderSetting).filter(
+        ReminderSetting.user_id == current_user.id,
+        ReminderSetting.remind_before_minutes == reminder.remind_before_minutes
+    )
+    if reminder.prayer_series_id:
+        existing = query.filter(ReminderSetting.prayer_series_id == reminder.prayer_series_id).first()
+    else:
+        existing = query.filter(ReminderSetting.event_series_id == reminder.event_series_id).first()
+    
+    if existing:
+        # Update existing
+        existing.is_enabled = reminder.is_enabled
+        db.commit()
+        db.refresh(existing)
+        return existing
+    
+    # Validate series exists
+    if reminder.prayer_series_id:
+        series = db.query(PrayerSeries).filter(PrayerSeries.id == reminder.prayer_series_id).first()
+        if not series:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prayer series not found")
+    else:
+        series = db.query(EventSeries).filter(EventSeries.id == reminder.event_series_id).first()
+        if not series:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event series not found")
+    
+    db_reminder = ReminderSetting(
+        user_id=current_user.id,
+        prayer_series_id=reminder.prayer_series_id,
+        event_series_id=reminder.event_series_id,
+        remind_before_minutes=reminder.remind_before_minutes,
+        is_enabled=reminder.is_enabled,
+    )
+    db.add(db_reminder)
+    db.commit()
+    db.refresh(db_reminder)
+    return db_reminder
+
+
+@router.put("/reminders/{reminder_id}", response_model=ReminderSettingResponse)
+def update_reminder_setting(
+    reminder_id: int,
+    reminder_update: ReminderSettingUpdate,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Update a reminder setting (toggle on/off).
+    Users can only update their own reminders.
+    """
+    reminder = db.query(ReminderSetting).filter(
+        ReminderSetting.id == reminder_id,
+        ReminderSetting.user_id == current_user.id
+    ).first()
+    
+    if not reminder:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Reminder setting not found"
+        )
+    
+    reminder.is_enabled = reminder_update.is_enabled
+    db.commit()
+    db.refresh(reminder)
+    return reminder
+
+
+@router.get("/reminders", response_model=list[ReminderSettingResponse])
+def list_reminder_settings(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    List all reminder settings for the current user.
+    Automatically removes reminders for prayer/event series that have no upcoming occurrences
+    (all completed/ended) to prevent flooding.
+    """
+    now = datetime.now(timezone.utc)
+    reminders = db.query(ReminderSetting).filter(
+        ReminderSetting.user_id == current_user.id
+    ).order_by(ReminderSetting.created_at.desc()).all()
+    
+    valid_reminders = []
+    reminders_to_delete = []
+    
+    for reminder in reminders:
+        is_valid = False
+        
+        if reminder.prayer_series_id:
+            # Check if prayer series has any upcoming occurrences
+            upcoming_count = db.query(PrayerOccurrence).filter(
+                PrayerOccurrence.prayer_series_id == reminder.prayer_series_id,
+                PrayerOccurrence.end_datetime >= now  # Not completed yet
+            ).count()
+            
+            if upcoming_count > 0:
+                is_valid = True
+            else:
+                reminders_to_delete.append(reminder)
+        
+        elif reminder.event_series_id:
+            # Check if event series has any upcoming occurrences
+            upcoming_count = db.query(EventOccurrence).filter(
+                EventOccurrence.event_series_id == reminder.event_series_id,
+                EventOccurrence.end_datetime >= now  # Not completed yet
+            ).count()
+            
+            if upcoming_count > 0:
+                is_valid = True
+            else:
+                reminders_to_delete.append(reminder)
+        
+        if is_valid:
+            valid_reminders.append(reminder)
+    
+    # Delete reminders for completed series
+    if reminders_to_delete:
+        for reminder in reminders_to_delete:
+            db.delete(reminder)
+        db.commit()
+        logger.info(f"Cleaned up {len(reminders_to_delete)} reminders for completed series for user {current_user.id}")
+    
+    return valid_reminders
+
+
+# =========================
+# Prayer Request Helper Functions
+# =========================
+
+def _format_prayer_request_response(
+    prayer_request: PrayerRequest,
+    db: Session,
+    is_pastor_view: bool = True
+) -> Dict[str, Any]:
+    """
+    Format prayer request response based on view context.
+    
+    Pastor view: Always shows full details including user_id, username, display_name
+    Public/Audit view: Anonymizes private requests (hides user_id, shows "Anonymous")
+    Member view: Shows their own requests with limited status info
+    """
+    from .models import User
+    
+    response_data = {
+        "id": prayer_request.id,
+        "request_text": prayer_request.request_text,
+        "request_type": prayer_request.request_type,
+        "status": prayer_request.status,
+        "created_at": prayer_request.created_at,
+        "prayed_at": prayer_request.prayed_at,
+        "archived_at": prayer_request.archived_at,
+        "updated_at": prayer_request.updated_at,
+    }
+    
+    # Check if private request has been prayed (should be anonymized)
+    # Anonymize when prayed_at is set, even before archived
+    is_private_prayed = (
+        prayer_request.request_type == "private" and 
+        prayer_request.prayed_at is not None
+    )
+    
+    if is_pastor_view:
+        if is_private_prayed:
+            # Private requests that have been prayed are anonymized even for pastor
+            # This happens when prayed_at is set, before or after archived
+            response_data["user_id"] = None
+            response_data["username"] = None
+            response_data["display_name"] = "Anonymous"
+            # Anonymize the request text as well
+            response_data["request_text"] = "This private prayer request has been completed"
+        else:
+            # Pastor sees full details for non-prayed private requests
+            user = db.query(User).filter(User.id == prayer_request.user_id).first()
+            response_data["user_id"] = prayer_request.user_id
+            response_data["username"] = user.username if user else None
+            response_data["display_name"] = user.name if user else "Unknown"
+    else:
+        # Member view: Always show their own identity (they submitted it)
+        # But anonymize request text for private requests that have been prayed
+        user = db.query(User).filter(User.id == prayer_request.user_id).first()
+        response_data["user_id"] = prayer_request.user_id
+        response_data["username"] = user.username if user else None
+        response_data["display_name"] = user.name if user else "Unknown"
+        
+        # Anonymize request text for private requests that have been prayed
+        if is_private_prayed:
+            response_data["request_text"] = "This private prayer request has been completed"
+    
+    return response_data
+
+
+@router.post("/prayer-requests", response_model=PrayerRequestResponse, status_code=status.HTTP_201_CREATED)
+def create_prayer_request(
+    request: PrayerRequestCreate,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Submit a prayer request.
+    v1.1: Members choose public or private prayer type.
+    Pastor always sees member identity. Public visibility respects request type.
+    """
+    if request.request_type not in ["public", "private"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="request_type must be 'public' or 'private'"
+        )
+    
+    db_request = PrayerRequest(
+        user_id=current_user.id,  # Always required - pastor must know who sent it
+        request_text=request.request_text,
+        request_type=request.request_type,
+        status="submitted",
+    )
+    db.add(db_request)
+    db.commit()
+    db.refresh(db_request)
+    
+    # Return response (member view - shows their own request)
+    return PrayerRequestResponse(**_format_prayer_request_response(db_request, db, is_pastor_view=False))
+
+
+@router.get("/prayer-requests", response_model=list[PrayerRequestResponse])
+def list_prayer_requests(
+    status_filter: Optional[str] = None,
+    current_user: User = Depends(require_pastor),
+    db: Session = Depends(get_db),
+):
+    """
+    List all prayer requests (pastor only).
+    Pastor always sees full details including member names.
+    Optionally filter by status: submitted, prayed, archived.
+    """
+    query = db.query(PrayerRequest)
+    
+    if status_filter:
+        query = query.filter(PrayerRequest.status == status_filter)
+    
+    requests = query.order_by(PrayerRequest.created_at.desc()).all()
+    
+    # Format responses with pastor view (full details)
+    return [PrayerRequestResponse(**_format_prayer_request_response(req, db, is_pastor_view=True)) for req in requests]
+
+
+@router.get("/prayer-requests/my", response_model=list[PrayerRequestResponse])
+def get_my_prayer_requests(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get current user's own prayer requests (members only).
+    Members see their own requests with limited status info (no pastor actions visible).
+    """
+    requests = db.query(PrayerRequest).filter(
+        PrayerRequest.user_id == current_user.id
+    ).order_by(PrayerRequest.created_at.desc()).all()
+    
+    # Format responses (member view - shows their own requests)
+    return [PrayerRequestResponse(**_format_prayer_request_response(req, db, is_pastor_view=False)) for req in requests]
+
+
+@router.get("/prayer-requests/{request_id}", response_model=PrayerRequestResponse)
+def get_prayer_request(
+    request_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Get a specific prayer request by ID.
+    Members can only view their own requests (limited status info).
+    Pastors can view any request (full details).
+    """
+    prayer_request = db.query(PrayerRequest).filter(PrayerRequest.id == request_id).first()
+    
+    if not prayer_request:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Prayer request not found"
+        )
+    
+    # Check if user has permission to view this request
+    is_pastor = current_user.role == "pastor"
+    
+    if not is_pastor and prayer_request.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to view this prayer request"
+        )
+    
+    # Format response based on user role
+    return PrayerRequestResponse(**_format_prayer_request_response(prayer_request, db, is_pastor_view=is_pastor))
+
+
+@router.put("/prayer-requests/{request_id}", response_model=PrayerRequestResponse)
+def update_prayer_request(
+    request_id: int,
+    request_update: PrayerRequestUpdate,
+    current_user: User = Depends(require_pastor),
+    db: Session = Depends(get_db),
+):
+    """
+    Update prayer request status (pastor only).
+    v1.1: When marked as "prayed", automatically archives and triggers member acknowledgement.
+    Status can be: submitted, prayed, archived.
+    """
+    if request_update.status not in ["submitted", "prayed", "archived"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Status must be one of: submitted, prayed, archived"
+        )
+    
+    prayer_request = db.query(PrayerRequest).filter(PrayerRequest.id == request_id).first()
+    
+    if not prayer_request:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Prayer request not found"
+        )
+    
+    now = datetime.now(timezone.utc)
+    
+    # Update status
+    prayer_request.status = request_update.status
+    
+    # Set prayed_at when marked as prayed
+    if request_update.status == "prayed" and not prayer_request.prayed_at:
+        prayer_request.prayed_at = now
+        # Auto-archive when marked as prayed
+        prayer_request.status = "archived"
+        prayer_request.archived_at = now
+        logger.info(f"Prayer request {request_id} marked as prayed and auto-archived by pastor {current_user.id}")
+        # TODO: Send acknowledgement notification to member
+        # This would trigger a push notification or email to the member
+        # For now, the member will see the status change when they refresh
+    
+    # Set archived_at if manually archived
+    elif request_update.status == "archived" and not prayer_request.archived_at:
+        prayer_request.archived_at = now
+    
+    db.commit()
+    db.refresh(prayer_request)
+    
+    # Return with pastor view (full details)
+    return PrayerRequestResponse(**_format_prayer_request_response(prayer_request, db, is_pastor_view=True))

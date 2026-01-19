@@ -2,8 +2,14 @@ import 'package:flutter/material.dart';
 import 'auth/login_screen.dart';
 import 'auth/auth_service.dart';
 import 'utils/navigation_helper.dart';
+import 'services/notification_service.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize notification service
+  await NotificationService().initialize();
+  
   runApp(const PPHApp());
 }
 

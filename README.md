@@ -249,6 +249,35 @@ Authorization: Bearer <access_token>
 - Edit/Delete only allowed before prayer starts
 - Completed prayers cannot be deleted (audit safety)
 
+### Prayer Request Endpoints (🙏 Member → Pastor Communication)
+
+| Endpoint | Method | Description | Auth Required |
+|----------|--------|-------------|---------------|
+| `/prayer-requests` | POST | Submit a prayer request. Body: `{ request_text, request_type }` where `request_type` is `"public"` or `"private"` | Yes (Member) |
+| `/prayer-requests` | GET | List all prayer requests (Pastor only). Optional: `?status_filter=submitted|prayed|archived` | Yes (Pastor) |
+| `/prayer-requests/my` | GET | Get current user's own prayer requests | Yes (Member) |
+| `/prayer-requests/{request_id}` | GET | Get a specific prayer request by ID | Yes |
+| `/prayer-requests/{request_id}` | PUT | Update prayer request status (Pastor only). Body: `{ status: "prayed" }` - automatically archives and anonymizes private requests | Yes (Pastor) |
+
+**Prayer Request Types:**
+- `public`: Can be mentioned in church/group prayer. Member name may be shared.
+- `private`: One-on-one prayer only. Never mentioned publicly. Identity anonymized after being prayed.
+
+**Prayer Request Status:**
+- `submitted`: Awaiting prayer (default)
+- `prayed`: Pastor has prayed for the request (triggers auto-archive and anonymization for private requests)
+- `archived`: Automatically set when status changes to "prayed" (read-only)
+
+**Privacy Rules:**
+- **Pastor View:** Always sees member identity for all requests (before and after prayer)
+- **Member View:** Sees their own requests. Private requests show anonymized text after being prayed.
+- **Public Visibility:** Private requests are anonymized (username, display_name, request_text) after being prayed, even for pastor view.
+
+**Lifecycle:**
+- `submitted` → `prayed` → `archived` (automatic)
+- When pastor marks as "prayed": Sets `prayed_at`, auto-archives, and anonymizes private requests
+- Member receives acknowledgement when request is prayed
+
 ### Event Endpoints (📅 Organizational Activities)
 
 | Endpoint | Method | Description | Auth Required |
@@ -732,6 +761,52 @@ Backend enforces role-based access control; frontend UI reflects read-only natur
 - `event_series.creator` (User) - Many-to-one relationship
 - `event_occurrences.event_series` (EventSeries) - Many-to-one relationship
 
+### Prayer Requests Table (🙏 Member → Pastor Communication)
+
+**Purpose:** Store prayer requests submitted by members, with public/private types and strict privacy rules.
+
+```sql
+- id (PK, Integer)
+- user_id (Integer, FK → users.id, NOT NULL, INDEXED)  -- Always required - pastor must know who sent it
+- request_text (String, NOT NULL)                      -- Prayer request content
+- request_type (String, default: "public", NOT NULL, INDEXED)  -- "public" or "private"
+- status (String, default: "submitted", NOT NULL, INDEXED)  -- "submitted", "prayed", "archived"
+- created_at (DateTime, timezone, NOT NULL, INDEXED)
+- prayed_at (DateTime, timezone, NULLABLE, INDEXED)     -- Set when pastor marks as prayed
+- archived_at (DateTime, timezone, NULLABLE, INDEXED)   -- Auto-set when prayed
+- updated_at (DateTime, timezone, NULLABLE)
+```
+
+**Prayer Request Types:**
+- **Public Prayer:** Can be mentioned in church/group prayer. Member name may be shared.
+- **Private Prayer:** One-on-one prayer only. Never mentioned publicly. Identity anonymized after being prayed.
+
+**Status Lifecycle:**
+- `submitted`: Awaiting prayer (default)
+- `prayed`: Pastor has prayed for the request (triggers auto-archive and anonymization for private requests)
+- `archived`: Automatically set when status changes to "prayed" (read-only)
+
+**Privacy Rules:**
+- **Pastor View:** Always sees member identity for all requests (before and after prayer)
+- **Member View:** Sees their own requests. Private requests show anonymized text after being prayed.
+- **Public Visibility:** Private requests are anonymized (username, display_name, request_text) after being prayed, even for pastor view.
+
+**Characteristics:**
+- ✅ Public/Private request types with strict privacy enforcement
+- ✅ Automatic anonymization for private requests after being prayed
+- ✅ Lifecycle: submitted → prayed → archived (automatic)
+- ✅ Member acknowledgement when request is prayed
+- ✅ Request text anonymized to "This private prayer request has been completed" for private requests after prayer
+
+**Indexes:**
+- `ix_prayer_requests_user_id` - Index on `user_id` for member queries
+- `ix_prayer_requests_request_type` - Index on `request_type` for filtering
+- `ix_prayer_requests_status` - Index on `status` for filtering
+- `ix_prayer_requests_created_at` - Index on `created_at` for sorting
+
+**Relationships:**
+- `prayer_requests.user` (User) - Many-to-one relationship
+
 ### OTPs Table
 
 ```sql
@@ -924,11 +999,35 @@ curl -X POST http://localhost:8000/auth/otp/request \
 - [x] Home screen Events integration (LIVE NOW section, Today's Events)
 - [x] Member Shell with shared bottom navigation
 - [x] Event sorting (matching prayer sorting logic)
+- [x] Prayer Requests system (v1.1 - complete implementation)
+- [x] Prayer Requests backend API (create, list, update, get by ID)
+- [x] Public/Private prayer request types with strict privacy rules
+- [x] Prayer request lifecycle (submitted → prayed → archived)
+- [x] Automatic anonymization for private requests after being prayed
+- [x] Member Prayer Requests UI (submit form, "My Requests" tab with details page)
+- [x] Pastor Prayer Requests UI (filtered tabs: Public, Private, Prayed, Archived)
+- [x] Pastor Prayer Request details page with "Mark as Prayed" action
+- [x] Request text anonymization ("This private prayer request has been completed")
+- [x] Sorting by latest timestamp (prayed_at > archived_at > created_at)
 
 ### 🚧 In Progress
 
-- [ ] Prayer requests API & UI
 - [ ] User settings (password change, email update)
+
+### ⚠️ Known Issues / Blockers
+
+- [ ] **Notification Reminders (BLOCKED)**
+  - **Status:** Scheduled notifications are not firing on Android devices
+  - **Issue:** Android 12+ scheduled notifications (`zonedSchedule`) are not appearing even though they're successfully scheduled
+  - **Workaround Attempted:** Periodic in-app checks every 30 seconds (only works when app is running)
+  - **Root Cause:** Android exact alarms permission and system-level notification scheduling limitations
+  - **Impact:** Prayer/Event reminder notifications do not appear at scheduled times
+  - **Next Steps:** 
+    - Investigate Android WorkManager for reliable background scheduling
+    - Consider alternative notification strategies (push notifications via backend)
+    - Test on multiple Android versions and devices
+    - Review Android notification channel and permission configurations
+  - **Note:** Reminder toggle UI is functional, but notifications will not fire reliably until this is resolved
 
 ### 📋 Planned Features
 
@@ -969,11 +1068,11 @@ The Pastor Panel is the control center where pastors manage prayer hall activiti
 
 ### 🙏 3. Prayer Requests
 
-- [ ] View incoming prayer requests
-- [ ] Filter by status (New, Prayed, Ongoing, Testimony)
+- [x] View incoming prayer requests ✅
+- [x] Filter by status (Public, Private, Prayed, Archived) ✅
+- [x] Mark as Prayed (auto-archives and anonymizes private requests) ✅
+- [x] Private / Public prayer requests option ✅
 - [ ] Categorize (Health, Family, Financial, Spiritual, Others)
-- [ ] Mark as Prayed, Ongoing, or Testimony
-- [ ] Private / Public prayer requests option
 - [ ] Priority levels (High, Medium, Low)
 - [ ] Comments/Notes on prayer requests
 - [ ] Prayer request analytics
@@ -1197,7 +1296,26 @@ Private project for Philadelphia Prayer House
 
 ## 📝 Recent Updates
 
-### Latest Features (2026-01-18)
+### Latest Features (2026-01-19)
+- ✅ **Prayer Requests System (v1.1)** - Complete implementation
+  - Backend: Prayer requests API with public/private types and strict privacy rules
+  - Database: `prayer_requests` table with lifecycle support (submitted → prayed → archived)
+  - Privacy: Pastor always sees member identity; private requests anonymized after being prayed
+  - Member Panel:
+    - Submit Request tab with prayer type selection (Public/Private)
+    - "My Requests" tab with list view and details page
+    - Status badges and request type indicators
+    - Automatic text anonymization for completed private requests
+    - Sorting by latest timestamp (prayed_at > archived_at > created_at)
+  - Pastor Panel:
+    - Prayer Requests page with filtered tabs (Public, Private, Prayed, Archived)
+    - Prayer Request details page with "Mark as Prayed" action
+    - Automatic anonymization when marking private requests as prayed
+    - Sorting by latest timestamp for all tabs
+  - Lifecycle: Automatic archive when marked as prayed; member receives acknowledgement
+  - Anonymization: Private request text replaced with "This private prayer request has been completed" after prayer
+
+### Previous Features (2026-01-18)
 - ✅ **UI Enhancements - Status-Based Icon Colors**
   - Icon colors now reflect status across all pages:
     - **Live Now (ongoing)**: Red - High attention, immediate
@@ -1285,4 +1403,4 @@ Private project for Philadelphia Prayer House
 ---
 
 **Status:** 🚧 In Active Development  
-**Last Updated:** 2026-01-18
+**Last Updated:** 2026-01-19

@@ -289,3 +289,127 @@ class EventCreatePreview(BaseModel):
     Preview of occurrences that will be generated.
     """
     occurrences: List[EventPreviewItem]
+
+
+# =========================
+# Engagement & Participation Schemas
+# =========================
+
+class AttendanceCreate(BaseModel):
+    """
+    Input schema for recording attendance.
+    Either prayer_occurrence_id or event_occurrence_id must be provided.
+    """
+    prayer_occurrence_id: Optional[int] = None
+    event_occurrence_id: Optional[int] = None
+
+
+class AttendanceResponse(BaseModel):
+    """
+    Response schema for attendance record.
+    """
+    id: int
+    user_id: int
+    prayer_occurrence_id: Optional[int]
+    event_occurrence_id: Optional[int]
+    joined_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class FavoriteCreate(BaseModel):
+    """
+    Input schema for adding a favorite.
+    Either prayer_series_id or event_series_id must be provided.
+    """
+    prayer_series_id: Optional[int] = None
+    event_series_id: Optional[int] = None
+
+
+class FavoriteResponse(BaseModel):
+    """
+    Response schema for favorite record.
+    """
+    id: int
+    user_id: int
+    prayer_series_id: Optional[int]
+    event_series_id: Optional[int]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ReminderSettingCreate(BaseModel):
+    """
+    Input schema for creating a reminder setting.
+    Either prayer_series_id or event_series_id must be provided.
+    remind_before_minutes must be 15 or 5.
+    """
+    prayer_series_id: Optional[int] = None
+    event_series_id: Optional[int] = None
+    remind_before_minutes: int  # 15 or 5
+    is_enabled: bool = True
+
+
+class ReminderSettingUpdate(BaseModel):
+    """
+    Input schema for updating a reminder setting.
+    """
+    is_enabled: bool
+
+
+class ReminderSettingResponse(BaseModel):
+    """
+    Response schema for reminder setting.
+    """
+    id: int
+    user_id: int
+    prayer_series_id: Optional[int]
+    event_series_id: Optional[int]
+    remind_before_minutes: int
+    is_enabled: bool
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class PrayerRequestCreate(BaseModel):
+    """
+    Input schema for creating a prayer request.
+    """
+    request_text: str
+    request_type: str  # "public" or "private"
+
+
+class PrayerRequestUpdate(BaseModel):
+    """
+    Input schema for updating a prayer request status (pastor only).
+    """
+    status: str  # submitted, prayed, archived
+
+
+class PrayerRequestResponse(BaseModel):
+    """
+    Response schema for prayer request.
+    For pastor: always includes user_id and full details.
+    For public/audit: private requests show anonymized data.
+    """
+    id: int
+    user_id: Optional[int]  # Always present for pastor, None for public/audit if private
+    request_text: str
+    request_type: str  # "public" or "private"
+    status: str  # submitted, prayed, archived
+    created_at: datetime
+    prayed_at: Optional[datetime]
+    archived_at: Optional[datetime]
+    updated_at: Optional[datetime]
+    # Computed fields (added in response)
+    display_name: Optional[str] = None  # Real name for pastor, "Anonymous" for public if private
+    username: Optional[str] = None  # Only for pastor view
+
+    class Config:
+        from_attributes = True

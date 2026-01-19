@@ -573,6 +573,7 @@ class _MemberEventsScreenState extends State<MemberEventsScreen> with TickerProv
                 ],
               ),
             ),
+      extendBody: true,
     );
   }
 

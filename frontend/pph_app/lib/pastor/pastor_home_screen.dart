@@ -616,6 +616,7 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
     final prayerType = (prayer['prayer_type'] as String? ?? 'offline').toLowerCase();
     final location = prayer['location'] as String?;
     final joinInfo = prayer['join_info'] as String?;
+    final prayerOccurrenceId = prayer['id'] as int?;
 
     String timeDisplay = "TBD";
     if (startStr != null && endStr != null) {
@@ -859,6 +860,7 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
     final startStr = event['start_datetime'] as String?;
     final endStr = event['end_datetime'] as String?;
     final location = event['location'] as String?;
+    final eventOccurrenceId = event['id'] as int?;
 
     String timeDisplay = "TBD";
     if (startStr != null && endStr != null) {
