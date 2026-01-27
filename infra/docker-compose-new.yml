@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: pph-postgres-new
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pph_db_new
+      POSTGRES_USER: pph_user
+      POSTGRES_PASSWORD: pph123
+    ports:
+      - "5433:5432"  # Different port to avoid conflict with existing DB
+    volumes:
+      - pph_pgdata_new:/var/lib/postgresql/data
+
+volumes:
+  pph_pgdata_new:

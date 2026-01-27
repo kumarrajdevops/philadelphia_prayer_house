@@ -31,10 +31,12 @@ This guide covers multiple methods to migrate your PPH database:
 mkdir -p backups
 
 # Dump the database (custom format - recommended)
-docker exec pph-postgres pg_dump -U pph_user -F c -b -v -f /tmp/pph_backup.dump pph_db
+# For Windows: Output directly to stdout and redirect to local file
+docker exec pph-postgres pg_dump -U pph_user -F c -b -v pph_db > ./backups/pph_backup_$(date +%Y%m%d_%H%M%S).dump
 
-# Copy backup file from container to host
-docker cp pph-postgres:/tmp/pph_backup.dump ./backups/pph_backup_$(date +%Y%m%d_%H%M%S).dump
+# Alternative (Linux/Mac): Create file in container then copy
+# docker exec pph-postgres pg_dump -U pph_user -F c -b -v -f /tmp/pph_backup.dump pph_db
+# docker cp pph-postgres:/tmp/pph_backup.dump ./backups/pph_backup_$(date +%Y%m%d_%H%M%S).dump
 ```
 
 **Option B: Direct Connection (if database is accessible directly)**
@@ -63,15 +65,18 @@ pg_dump "postgresql://pph_user:pph123@localhost:5432/pph_db" \
 **Option A: New Docker Container**
 
 ```bash
-# Update docker-compose.yml with new database name
-# Or create a new docker-compose file for new database
-
-# Start new database container
+# Start new database container (runs on port 5433 to avoid conflicts)
 docker-compose -f infra/docker-compose-new.yml up -d
 
-# Or manually create new database
-docker exec -it pph-postgres-new psql -U pph_user -c "CREATE DATABASE pph_db_new;"
+# The database pph_db_new is automatically created by the container
+# Verify it's running:
+docker ps --filter "name=pph-postgres-new"
+
+# Optional: Connect to verify
+docker exec -it pph-postgres-new psql -U pph_user -d pph_db_new -c "\l"
 ```
+
+**Note:** The new database runs on port `5433` (instead of `5432`) to allow both databases to run simultaneously during migration.
 
 **Option B: Different Server/Instance**
 
@@ -85,43 +90,50 @@ psql -h new-server-host -U pph_user -c "CREATE DATABASE pph_db_new;"
 **Option A: Using Docker**
 
 ```bash
-# Copy backup file to new container
-docker cp ./backups/pph_backup_YYYYMMDD_HHMMSS.dump pph-postgres-new:/tmp/pph_backup.dump
+# For Windows: Use stdin redirection to avoid /tmp path issues
+docker exec -i pph-postgres-new pg_restore -U pph_user -d pph_db_new -v < ./backups/pph_backup_YYYYMMDD_HHMMSS.dump
 
-# Restore the database
-docker exec pph-postgres-new pg_restore -U pph_user -d pph_db_new -v /tmp/pph_backup.dump
-
-# Clean up
-docker exec pph-postgres-new rm /tmp/pph_backup.dump
+# Alternative (Linux/Mac): Copy file to container then restore
+# docker cp ./backups/pph_backup_YYYYMMDD_HHMMSS.dump pph-postgres-new:/tmp/pph_backup.dump
+# docker exec pph-postgres-new pg_restore -U pph_user -d pph_db_new -v /tmp/pph_backup.dump
+# docker exec pph-postgres-new rm /tmp/pph_backup.dump
 ```
 
 **Option B: Direct Connection**
 
 ```bash
-# Restore to new database
-pg_restore -h localhost -U pph_user -d pph_db_new -v ./backups/pph_backup_YYYYMMDD_HHMMSS.dump
+# Restore to new database (using port 5433 during migration)
+pg_restore -h localhost -p 5433 -U pph_user -d pph_db_new -v ./backups/pph_backup_YYYYMMDD_HHMMSS.dump
 
 # You'll be prompted for password
+# After migration, if you switch to port 5432, omit the -p flag
 ```
 
 **Option C: Using Connection String**
 
 ```bash
-pg_restore "postgresql://pph_user:pph123@localhost:5432/pph_db_new" \
+# For new database running on port 5433 (during migration)
+pg_restore "postgresql://pph_user:pph123@localhost:5433/pph_db_new" \
   -v \
   ./backups/pph_backup_YYYYMMDD_HHMMSS.dump
+
+# After migration, if you switch to port 5432, use:
+# pg_restore "postgresql://pph_user:pph123@localhost:5432/pph_db_new" ...
 ```
 
 ### Step 4: Verify Migration
 
 ```bash
-# Connect to new database and check
-docker exec -it pph-postgres-new psql -U pph_user -d pph_db_new -c "\dt"
+# Connect to new database and check tables
+docker exec pph-postgres-new psql -U pph_user -d pph_db_new -c "\dt"
 
 # Check row counts
-docker exec -it pph-postgres-new psql -U pph_user -d pph_db_new -c "SELECT COUNT(*) FROM users;"
-docker exec -it pph-postgres-new psql -U pph_user -d pph_db_new -c "SELECT COUNT(*) FROM prayers;"
-docker exec -it pph-postgres-new psql -U pph_user -d pph_db_new -c "SELECT COUNT(*) FROM events;"
+docker exec pph-postgres-new psql -U pph_user -d pph_db_new -c "SELECT COUNT(*) FROM users;"
+docker exec pph-postgres-new psql -U pph_user -d pph_db_new -c "SELECT COUNT(*) FROM prayers;"
+docker exec pph-postgres-new psql -U pph_user -d pph_db_new -c "SELECT COUNT(*) FROM event_series;"
+
+# Or check all at once
+docker exec pph-postgres-new psql -U pph_user -d pph_db_new -c "SELECT 'users' as table_name, COUNT(*) as count FROM users UNION ALL SELECT 'prayers', COUNT(*) FROM prayers UNION ALL SELECT 'event_series', COUNT(*) FROM event_series;"
 ```
 
 ---
@@ -263,8 +275,11 @@ After migration, update your application to use the new database:
 # Old database
 # DATABASE_URL=postgresql://pph_user:pph123@localhost:5432/pph_db
 
-# New database
-DATABASE_URL=postgresql://pph_user:pph123@localhost:5432/pph_db_new
+# New database (during migration - uses port 5433)
+DATABASE_URL=postgresql://pph_user:pph123@localhost:5433/pph_db_new
+
+# After migration complete, you can switch to port 5432:
+# DATABASE_URL=postgresql://pph_user:pph123@localhost:5432/pph_db_new
 ```
 
 ### Update `docker-compose.yml` (if using Docker):
@@ -277,7 +292,11 @@ environment:
 ### Update `alembic.ini`:
 
 ```ini
-sqlalchemy.url = postgresql://pph_user:pph123@localhost:5432/pph_db_new
+# During migration (port 5433)
+sqlalchemy.url = postgresql://pph_user:pph123@localhost:5433/pph_db_new
+
+# After migration complete, switch to port 5432:
+# sqlalchemy.url = postgresql://pph_user:pph123@localhost:5432/pph_db_new
 ```
 
 ---
