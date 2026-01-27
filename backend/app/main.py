@@ -1,5 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+import os
 
 from .database import engine, Base
 from . import routers  # Import routers.py file
@@ -22,6 +25,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Create upload directories before mounting static files
+# Use absolute path based on backend directory
+backend_dir = Path(__file__).parent.parent  # Go up from app/ to backend/
+upload_dir = (backend_dir / settings.UPLOAD_DIR).resolve()
+upload_dir.mkdir(parents=True, exist_ok=True)
+profile_dir = (backend_dir / settings.PROFILE_IMAGES_DIR).resolve()
+profile_dir.mkdir(parents=True, exist_ok=True)
+
+# Mount static files for profile images
+app.mount("/uploads", StaticFiles(directory=str(upload_dir)), name="uploads")
 
 # Include routers
 app.include_router(auth_router)

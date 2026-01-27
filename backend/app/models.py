@@ -15,6 +15,14 @@ class User(Base):
     phone = Column(String, unique=True, nullable=True, index=True)
     email = Column(String, unique=True, nullable=True, index=True)
     is_active = Column(Boolean, default=True, nullable=False)
+    # Profile fields
+    profile_image_url = Column(String, nullable=True)  # URL to profile picture
+    email_verified = Column(Boolean, default=False, nullable=False)  # Email verification status
+    last_login = Column(DateTime(timezone=True), nullable=True)  # Last login timestamp
+    # Soft delete fields
+    is_deleted = Column(Boolean, default=False, nullable=False, index=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    anonymized_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

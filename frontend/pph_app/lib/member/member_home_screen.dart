@@ -14,6 +14,9 @@ import 'member_schedule_screen.dart';
 import 'member_events_screen.dart';
 import 'member_favorites_screen.dart';
 import 'member_reminders_screen.dart';
+import 'member_settings_screen.dart';
+import '../services/profile_service.dart';
+import '../utils/api_client.dart';
 
 class MemberHomeScreen extends StatefulWidget {
   const MemberHomeScreen({super.key});
@@ -24,6 +27,7 @@ class MemberHomeScreen extends StatefulWidget {
 
 class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBindingObserver {
   String? memberName;
+  String? profileImageUrl;
   bool _loading = true;
   List<Map<String, dynamic>> _todayPrayers = [];
   List<Map<String, dynamic>> _livePrayers = [];
@@ -78,6 +82,19 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
     setState(() {
       memberName = prefs.getString("name") ?? prefs.getString("username") ?? "Member";
     });
+    
+    // Load profile image
+    try {
+      final profile = await ProfileService.getProfile();
+      if (profile != null && mounted) {
+        setState(() {
+          profileImageUrl = profile["profile_image_url"];
+        });
+      }
+    } catch (e) {
+      // Silently fail - profile image is optional
+      print("Failed to load profile image: $e");
+    }
   }
 
   String _computeStatus(String? startStr, String? endStr) {
@@ -1935,16 +1952,21 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
                 CircleAvatar(
                   radius: 30,
                   backgroundColor: Colors.white,
-                  child: Text(
-                    (memberName != null && memberName!.isNotEmpty) 
-                        ? memberName!.substring(0, 1).toUpperCase() 
-                        : "M",
-                    style: TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.blue[700],
-                    ),
-                  ),
+                  backgroundImage: profileImageUrl != null && profileImageUrl!.isNotEmpty
+                      ? NetworkImage("${ApiClient.baseUrl}/uploads/$profileImageUrl")
+                      : null,
+                  child: profileImageUrl == null || profileImageUrl!.isEmpty
+                      ? Text(
+                          (memberName != null && memberName!.isNotEmpty) 
+                              ? memberName!.substring(0, 1).toUpperCase() 
+                              : "M",
+                          style: TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.blue[700],
+                          ),
+                        )
+                      : null,
                 ),
                 const SizedBox(height: 12),
                 Text(
@@ -2025,11 +2047,16 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
           ListTile(
             leading: const Icon(Icons.settings),
             title: const Text("Settings"),
-            onTap: () {
+            onTap: () async {
               Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text("Settings - Coming soon")),
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const MemberSettingsScreen(),
+                ),
               );
+              // Refresh profile info when returning from Settings
+              _loadMemberInfo();
             },
           ),
           ListTile(

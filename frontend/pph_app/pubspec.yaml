@@ -40,6 +40,7 @@ dependencies:
   url_launcher: ^6.2.5
   flutter_local_notifications: ^18.0.1
   timezone: ^0.9.4
+  image_picker: ^1.0.7
 
 dev_dependencies:
   flutter_test:

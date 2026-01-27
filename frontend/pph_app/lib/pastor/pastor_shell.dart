@@ -2,11 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../auth/login_screen.dart';
 import '../auth/auth_service.dart';
+import '../services/profile_service.dart';
+import '../utils/api_client.dart';
 import 'pastor_home_screen.dart';
 import 'pastor_events_screen.dart';
 import 'pastor_members_screen.dart';
 import 'pastor_gallery_screen.dart';
 import 'pastor_prayer_requests_screen.dart';
+import '../member/member_settings_screen.dart';
 
 class PastorShell extends StatefulWidget {
   const PastorShell({super.key});
@@ -18,6 +21,7 @@ class PastorShell extends StatefulWidget {
 class _PastorShellState extends State<PastorShell> {
   int _currentIndex = 0;
   String? pastorName;
+  String? profileImageUrl;
 
   late final List<Widget> _screens;
 
@@ -38,6 +42,19 @@ class _PastorShellState extends State<PastorShell> {
     setState(() {
       pastorName = prefs.getString("name") ?? prefs.getString("username") ?? "Pastor";
     });
+    
+    // Load profile image
+    try {
+      final profile = await ProfileService.getProfile();
+      if (profile != null && mounted) {
+        setState(() {
+          profileImageUrl = profile["profile_image_url"];
+        });
+      }
+    } catch (e) {
+      // Silently fail - profile image is optional
+      print("Failed to load profile image: $e");
+    }
   }
 
   void _onTabTapped(int index) {
@@ -105,14 +122,19 @@ class _PastorShellState extends State<PastorShell> {
                 CircleAvatar(
                   radius: 30,
                   backgroundColor: Colors.white,
-                  child: Text(
-                    pastorName?.substring(0, 1).toUpperCase() ?? "P",
-                    style: TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.blue[700],
-                    ),
-                  ),
+                  backgroundImage: profileImageUrl != null && profileImageUrl!.isNotEmpty
+                      ? NetworkImage("${ApiClient.baseUrl}/uploads/$profileImageUrl")
+                      : null,
+                  child: profileImageUrl == null || profileImageUrl!.isEmpty
+                      ? Text(
+                          pastorName?.substring(0, 1).toUpperCase() ?? "P",
+                          style: TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.blue[700],
+                          ),
+                        )
+                      : null,
                 ),
                 const SizedBox(height: 12),
                 Text(
@@ -184,12 +206,16 @@ class _PastorShellState extends State<PastorShell> {
           ListTile(
             leading: const Icon(Icons.settings),
             title: const Text("Settings"),
-            onTap: () {
+            onTap: () async {
               Navigator.pop(context);
-              // TODO: Navigate to settings
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text("Settings - Coming soon")),
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const MemberSettingsScreen(),
+                ),
               );
+              // Refresh profile info when returning from Settings
+              _loadPastorInfo();
             },
           ),
           const Divider(),

@@ -45,6 +45,12 @@ class Settings:
     # Environment
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
     DEBUG: bool = os.getenv("DEBUG", "true").lower() == "true"
+    
+    # File Upload Settings
+    UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "uploads")
+    PROFILE_IMAGES_DIR: str = os.getenv("PROFILE_IMAGES_DIR", "uploads/profiles")
+    MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "2"))  # 2 MB max for profile images
+    ALLOWED_IMAGE_TYPES: list[str] = ["image/jpeg", "image/png", "image/webp"]
 
 
 settings = Settings()

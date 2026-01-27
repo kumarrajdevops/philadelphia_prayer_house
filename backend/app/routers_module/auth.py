@@ -1,8 +1,12 @@
 """
 Authentication routes for password and OTP-based login.
 """
-from datetime import timedelta
+from datetime import timedelta, datetime
 from typing import Optional
+import os
+import uuid
+import shutil
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -24,8 +28,10 @@ from ..auth import (
     get_user_by_phone_or_email,
     get_password_hash,
     generate_otp,
+    verify_password,
 )
 from ..config import settings
+from fastapi import UploadFile, File
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
@@ -113,6 +119,42 @@ class UserResponse(BaseModel):
         from_attributes = True
         # Exclude DateTime fields that cause serialization issues
         exclude = {"created_at", "updated_at", "hashed_password"}
+
+
+class ProfileResponse(BaseModel):
+    """Profile response schema with all user fields."""
+    id: int
+    name: str
+    username: str
+    role: str
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    profile_image_url: Optional[str] = None
+    email_verified: bool
+    last_login: Optional[datetime] = None
+    has_password: bool  # Whether user has password set
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class PasswordChange(BaseModel):
+    """Password change request schema."""
+    current_password: str
+    new_password: str = Field(..., min_length=6)
+
+
+class PasswordSet(BaseModel):
+    """Set password request schema (for OTP-only users)."""
+    new_password: str = Field(..., min_length=6)
+
+
+class ProfileUpdate(BaseModel):
+    """Profile update request schema."""
+    name: Optional[str] = None
+    username: Optional[str] = None
+    email: Optional[EmailStr] = None
 
 
 # =========================
@@ -215,6 +257,10 @@ def login(
             detail="Incorrect username/email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    
+    # Update last_login
+    user.last_login = datetime.utcnow()
+    db.commit()
     
     # Create tokens (convert user.id to string for JWT)
     access_token = create_access_token(data={"sub": str(user.id), "username": user.username, "role": user.role})
@@ -384,6 +430,10 @@ def verify_otp_login(otp_data: OTPVerify, db: Session = Depends(get_db)):
         otp_record.is_verified = True
         db.commit()
     
+    # Update last_login
+    user.last_login = datetime.utcnow()
+    db.commit()
+    
     # Create tokens
     access_token = create_access_token(data={"sub": str(user.id), "username": user.username, "role": user.role})
     refresh_token = create_refresh_token(data={"sub": str(user.id)})
@@ -466,4 +516,294 @@ def get_current_user_info(
             detail="Invalid authentication credentials"
         )
     return user
+
+
+# =========================
+# Profile Management
+# =========================
+
+@router.get("/profile", response_model=ProfileResponse)
+def get_profile(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    """Get current user's full profile information."""
+    from ..auth import get_current_user as get_user_from_token
+    user = get_user_from_token(db, token)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials"
+        )
+    
+    # Return profile with has_password flag
+    profile_dict = {
+        "id": user.id,
+        "name": user.name,
+        "username": user.username,
+        "role": user.role,
+        "phone": user.phone,
+        "email": user.email,
+        "profile_image_url": user.profile_image_url,
+        "email_verified": user.email_verified,
+        "last_login": user.last_login,
+        "has_password": user.hashed_password is not None,
+        "created_at": user.created_at,
+    }
+    return ProfileResponse(**profile_dict)
+
+
+@router.put("/profile", response_model=ProfileResponse)
+def update_profile(
+    profile_data: ProfileUpdate,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    """Update user profile (name, username, email)."""
+    from ..auth import get_current_user as get_user_from_token
+    user = get_user_from_token(db, token)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials"
+        )
+    
+    # Check if user is deleted
+    if user.is_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account has been deleted"
+        )
+    
+    # Update name if provided
+    if profile_data.name is not None:
+        user.name = profile_data.name
+    
+    # Update username if provided (with uniqueness check)
+    if profile_data.username is not None:
+        if profile_data.username != user.username:
+            existing_user = db.query(User).filter(
+                User.username == profile_data.username,
+                User.id != user.id
+            ).first()
+            if existing_user:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Username already taken"
+                )
+            user.username = profile_data.username
+    
+    # Update email if provided (with uniqueness check)
+    if profile_data.email is not None:
+        if profile_data.email != user.email:
+            existing_user = db.query(User).filter(
+                User.email == profile_data.email,
+                User.id != user.id
+            ).first()
+            if existing_user:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Email already registered"
+                )
+            user.email = profile_data.email
+            user.email_verified = False  # Reset verification on email change
+    
+    db.commit()
+    db.refresh(user)
+    
+    # Return updated profile
+    profile_dict = {
+        "id": user.id,
+        "name": user.name,
+        "username": user.username,
+        "role": user.role,
+        "phone": user.phone,
+        "email": user.email,
+        "profile_image_url": user.profile_image_url,
+        "email_verified": user.email_verified,
+        "last_login": user.last_login,
+        "has_password": user.hashed_password is not None,
+        "created_at": user.created_at,
+    }
+    return ProfileResponse(**profile_dict)
+
+
+@router.post("/change-password", status_code=status.HTTP_200_OK)
+def change_password(
+    password_data: PasswordChange,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    """Change password for users with existing password."""
+    from ..auth import get_current_user as get_user_from_token
+    user = get_user_from_token(db, token)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials"
+        )
+    
+    # Check if user has password
+    if not user.hashed_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password not set. Use /auth/set-password instead."
+        )
+    
+    # Verify current password
+    if not verify_password(password_data.current_password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect"
+        )
+    
+    # Update password
+    user.hashed_password = get_password_hash(password_data.new_password)
+    db.commit()
+    
+    return {"message": "Password changed successfully"}
+
+
+@router.post("/set-password", status_code=status.HTTP_200_OK)
+def set_password(
+    password_data: PasswordSet,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    """Set password for OTP-only users."""
+    from ..auth import get_current_user as get_user_from_token
+    user = get_user_from_token(db, token)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials"
+        )
+    
+    # Check if password already set
+    if user.hashed_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password already set. Use /auth/change-password to update it."
+        )
+    
+    # Set password
+    user.hashed_password = get_password_hash(password_data.new_password)
+    db.commit()
+    
+    return {"message": "Password set successfully. You can now login with username/email and password."}
+
+
+@router.post("/profile/picture", status_code=status.HTTP_200_OK)
+async def upload_profile_picture(
+    file: UploadFile = File(...),
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    """Upload profile picture."""
+    from ..auth import get_current_user as get_user_from_token
+    user = get_user_from_token(db, token)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials"
+        )
+    
+    # Validate file type (check both content_type and file extension)
+    file_ext = Path(file.filename or "").suffix.lower()
+    allowed_extensions = [".jpg", ".jpeg", ".png", ".webp"]
+    content_type_valid = file.content_type and file.content_type in settings.ALLOWED_IMAGE_TYPES
+    extension_valid = file_ext in allowed_extensions
+    
+    if not content_type_valid and not extension_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file type. Allowed types: {', '.join(settings.ALLOWED_IMAGE_TYPES)}. "
+                  f"File content_type: {file.content_type}, extension: {file_ext}"
+        )
+    
+    # Validate file size (2 MB max)
+    file_content = await file.read()
+    file_size_mb = len(file_content) / (1024 * 1024)
+    if file_size_mb > settings.MAX_FILE_SIZE_MB:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File too large. Maximum size: {settings.MAX_FILE_SIZE_MB} MB"
+        )
+    
+    # Create upload directory if it doesn't exist
+    upload_dir = Path(settings.PROFILE_IMAGES_DIR)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Generate unique filename (use .jpg as default if extension not detected)
+    if not file_ext:
+        file_ext = ".jpg"
+    unique_filename = f"{user.id}_{uuid.uuid4().hex}{file_ext}"
+    file_path = upload_dir / unique_filename
+    
+    # Delete old profile picture if exists
+    if user.profile_image_url:
+        old_file_path = Path(user.profile_image_url.replace("/", os.sep))
+        if old_file_path.exists():
+            try:
+                old_file_path.unlink()
+            except Exception:
+                pass  # Ignore errors deleting old file
+    
+    # Save new file
+    with open(file_path, "wb") as f:
+        f.write(file_content)
+    
+    # Update user profile_image_url (relative path for serving)
+    user.profile_image_url = f"profiles/{unique_filename}"
+    db.commit()
+    
+    return {"message": "Profile picture uploaded successfully", "profile_image_url": user.profile_image_url}
+
+
+@router.delete("/account", status_code=status.HTTP_200_OK)
+def delete_account(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    """Soft delete user account with anonymization."""
+    from ..auth import get_current_user as get_user_from_token
+    user = get_user_from_token(db, token)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials"
+        )
+    
+    # Check if already deleted
+    if user.is_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Account already deleted"
+        )
+    
+    # Soft delete and anonymize
+    import uuid as uuid_lib
+    user.is_deleted = True
+    user.deleted_at = datetime.utcnow()
+    user.anonymized_at = datetime.utcnow()
+    user.name = "Deleted User"
+    user.username = f"deleted_{uuid_lib.uuid4().hex[:8]}"
+    user.email = None
+    user.phone = None
+    user.hashed_password = None
+    user.is_active = False
+    
+    # Delete profile picture
+    if user.profile_image_url:
+        file_path = Path(settings.PROFILE_IMAGES_DIR) / Path(user.profile_image_url).name
+        if file_path.exists():
+            try:
+                file_path.unlink()
+            except Exception:
+                pass
+        user.profile_image_url = None
+    
+    db.commit()
+    
+    return {"message": "Account deleted successfully"}
 
