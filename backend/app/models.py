@@ -334,6 +334,8 @@ class PrayerRequest(Base):
         nullable=False,  # Always required - pastor must know who sent it
         index=True,
     )
+    member_name = Column(String, nullable=False)  # Store member name at submission for audit (preserved even if user deleted)
+    member_username = Column(String, nullable=False)  # Store member username at submission for audit (preserved even if user deleted)
     request_text = Column(String, nullable=False)
     request_type = Column(String, default="public", nullable=False, index=True)  # public, private
     status = Column(String, default="submitted", nullable=False, index=True)  # submitted, prayed, archived

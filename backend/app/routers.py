@@ -9,6 +9,9 @@ from .models import User, Prayer, EventSeries, EventOccurrence, PrayerSeries, Pr
 from .schemas import (
     UserCreate,
     UserResponse,
+    MemberResponse,
+    MemberUpdate,
+    MemberDetailResponse,
     PrayerCreate,
     PrayerUpdate,
     PrayerResponse,
@@ -63,6 +66,7 @@ router = APIRouter()
 @router.post("/users", response_model=UserResponse)
 def create_user(
     user: UserCreate,
+    current_user: User = Depends(require_pastor),
     db: Session = Depends(get_db)
 ):
     db_user = User(
@@ -77,6 +81,7 @@ def create_user(
 
 @router.get("/users", response_model=list[UserResponse])
 def list_users(
+    current_user: User = Depends(require_pastor),
     db: Session = Depends(get_db)
 ):
     return db.query(User).order_by(User.id).all()
@@ -147,10 +152,11 @@ def create_prayer(
 
 @router.get("/prayers", response_model=list[PrayerResponse])
 def list_prayers(
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """
-    List all prayers. Public endpoint - no authentication required.
+    List all prayers. Requires authentication to check user status.
     Status is computed dynamically and updated in the database.
     """
     prayers = (
@@ -326,11 +332,13 @@ def delete_prayer(
 @router.post("/prayers/preview", response_model=PrayerCreatePreview)
 def preview_prayer_occurrences(
     prayer_data: PrayerSeriesCreate,
+    current_user: User = Depends(require_pastor),
     db: Session = Depends(get_db)
 ):
     """
     Preview occurrences that will be generated for a prayer series.
     Shows next 5 occurrences for validation before creation.
+    Pastor only.
     """
     # Validate recurrence_type - daily, weekly, and monthly allowed
     if prayer_data.recurrence_type not in ['none', 'daily', 'weekly', 'monthly']:
@@ -509,11 +517,12 @@ def create_prayer_series(
 @router.get("/prayers/occurrences", response_model=list[PrayerOccurrenceResponse])
 def list_prayer_occurrences(
     tab: Optional[str] = None,  # "today", "upcoming", "past"
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """
     List all prayer occurrences.
-    Public endpoint - no authentication required.
+    Requires authentication to check user status.
     Status is computed dynamically and updated in the database.
     Supports multi-day prayers (e.g., 11pm to 1am night prayers).
     """
@@ -556,6 +565,7 @@ def list_prayer_occurrences(
 @router.get("/prayers/occurrences/{occurrence_id}", response_model=PrayerOccurrenceResponse)
 def get_prayer_occurrence(
     occurrence_id: int,
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -792,11 +802,13 @@ def delete_prayer_occurrence(
 @router.post("/events/preview", response_model=EventCreatePreview)
 def preview_event_occurrences(
     event_data: EventSeriesCreate,
+    current_user: User = Depends(require_pastor),
     db: Session = Depends(get_db)
 ):
     """
     Preview occurrences that will be generated for an event.
     Shows next 5 occurrences for validation before creation.
+    Pastor only.
     """
     occurrences = generate_occurrences(
         start_datetime=event_data.start_datetime,
@@ -941,11 +953,12 @@ def create_event(
 @router.get("/events/occurrences", response_model=list[EventOccurrenceResponse])
 def list_event_occurrences(
     tab: Optional[str] = None,  # "today", "upcoming", "past"
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """
     List all event occurrences.
-    Public endpoint - no authentication required.
+    Requires authentication to check user status.
     Status is computed dynamically and updated in the database.
     """
     # Use UTC for all datetime comparisons (events are stored in UTC)
@@ -987,6 +1000,7 @@ def list_event_occurrences(
 @router.get("/events/occurrences/{occurrence_id}", response_model=EventOccurrenceResponse)
 def get_event_occurrence(
     occurrence_id: int,
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -1624,17 +1638,22 @@ def _format_prayer_request_response(
             response_data["request_text"] = "This private prayer request has been completed"
         else:
             # Pastor sees full details for non-prayed private requests
-            user = db.query(User).filter(User.id == prayer_request.user_id).first()
+            # Use stored member_name and member_username for audit (preserved even if user deleted)
             response_data["user_id"] = prayer_request.user_id
-            response_data["username"] = user.username if user else None
-            response_data["display_name"] = user.name if user else "Unknown"
+            # Use stored member_username (preserved at submission) instead of current user.username
+            # This ensures we show the original username even if user was deleted
+            response_data["username"] = prayer_request.member_username if prayer_request.member_username else None
+            # Use stored member_name (preserved at submission) instead of current user.name
+            # This ensures we show the original name even if user was deleted
+            response_data["display_name"] = prayer_request.member_name if prayer_request.member_name else "Unknown"
     else:
         # Member view: Always show their own identity (they submitted it)
         # But anonymize request text for private requests that have been prayed
-        user = db.query(User).filter(User.id == prayer_request.user_id).first()
         response_data["user_id"] = prayer_request.user_id
-        response_data["username"] = user.username if user else None
-        response_data["display_name"] = user.name if user else "Unknown"
+        # Use stored member_username (preserved at submission) for consistency
+        response_data["username"] = prayer_request.member_username if prayer_request.member_username else None
+        # Use stored member_name (preserved at submission) for consistency
+        response_data["display_name"] = prayer_request.member_name if prayer_request.member_name else "Unknown"
         
         # Anonymize request text for private requests that have been prayed
         if is_private_prayed:
@@ -1662,6 +1681,8 @@ def create_prayer_request(
     
     db_request = PrayerRequest(
         user_id=current_user.id,  # Always required - pastor must know who sent it
+        member_name=current_user.name,  # Store member name at submission for audit (preserved even if user deleted)
+        member_username=current_user.username,  # Store member username at submission for audit (preserved even if user deleted)
         request_text=request.request_text,
         request_type=request.request_type,
         status="submitted",
@@ -1796,3 +1817,336 @@ def update_prayer_request(
     
     # Return with pastor view (full details)
     return PrayerRequestResponse(**_format_prayer_request_response(prayer_request, db, is_pastor_view=True))
+
+
+# =========================
+# Members Management Routes (Pastor Only)
+# =========================
+
+@router.get("/members", response_model=list[MemberResponse])
+def list_members(
+    search: Optional[str] = None,
+    role: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    is_deleted: Optional[bool] = None,
+    current_user: User = Depends(require_pastor),
+    db: Session = Depends(get_db),
+):
+    """
+    List all members with optional search and filters (pastor only).
+    Supports search by name, username, phone, or email.
+    """
+    query = db.query(User)
+    
+    # Filter out deleted users by default (unless explicitly requested)
+    if is_deleted is None:
+        query = query.filter(User.is_deleted == False)
+    elif is_deleted is True:
+        query = query.filter(User.is_deleted == True)
+    else:
+        query = query.filter(User.is_deleted == False)
+    
+    # Apply role filter
+    if role:
+        query = query.filter(User.role == role)
+    
+    # Apply active status filter
+    if is_active is not None:
+        query = query.filter(User.is_active == is_active)
+    
+    # Apply search filter
+    if search:
+        search_term = f"%{search.lower()}%"
+        query = query.filter(
+            or_(
+                User.name.ilike(search_term),
+                User.username.ilike(search_term),
+                User.phone.ilike(search_term) if User.phone else False,
+                User.email.ilike(search_term) if User.email else False,
+            )
+        )
+    
+    # Order by name
+    members = query.order_by(User.name.asc()).all()
+    
+    return members
+
+
+@router.get("/members/{member_id}", response_model=MemberDetailResponse)
+def get_member(
+    member_id: int,
+    current_user: User = Depends(require_pastor),
+    db: Session = Depends(get_db),
+):
+    """
+    Get detailed member information including related data counts (pastor only).
+    """
+    member = db.query(User).filter(User.id == member_id).first()
+    
+    if not member:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Member not found"
+        )
+    
+    # Get related data counts
+    prayer_requests_count = db.query(PrayerRequest).filter(
+        PrayerRequest.user_id == member_id
+    ).count()
+    
+    attendance_count = db.query(Attendance).filter(
+        Attendance.user_id == member_id
+    ).count()
+    
+    favorites_count = db.query(Favorite).filter(
+        Favorite.user_id == member_id
+    ).count()
+    
+    # Build response
+    member_dict = {
+        "id": member.id,
+        "name": member.name,
+        "username": member.username,
+        "email": member.email,
+        "phone": member.phone,
+        "role": member.role,
+        "is_active": member.is_active,
+        "is_deleted": member.is_deleted,
+        "profile_image_url": member.profile_image_url,
+        "email_verified": member.email_verified,
+        "last_login": member.last_login,
+        "created_at": member.created_at,
+        "deleted_at": member.deleted_at,
+        "prayer_requests_count": prayer_requests_count,
+        "attendance_count": attendance_count,
+        "favorites_count": favorites_count,
+    }
+    
+    return MemberDetailResponse(**member_dict)
+
+
+@router.put("/members/{member_id}", response_model=MemberResponse)
+def update_member(
+    member_id: int,
+    member_update: MemberUpdate,
+    current_user: User = Depends(require_pastor),
+    db: Session = Depends(get_db),
+):
+    """
+    Update member details (pastor only).
+    """
+    member = db.query(User).filter(User.id == member_id).first()
+    
+    if not member:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Member not found"
+        )
+    
+    # Prevent editing deleted users
+    if member.is_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot edit deleted member accounts"
+        )
+    
+    # Update fields if provided
+    if member_update.name is not None:
+        member.name = member_update.name
+    
+    if member_update.username is not None:
+        # Check if username is already taken by another user
+        existing_user = db.query(User).filter(
+            User.username == member_update.username,
+            User.id != member_id
+        ).first()
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Username already taken"
+            )
+        member.username = member_update.username
+    
+    if member_update.email is not None:
+        # Check if email is already taken by another user
+        if member_update.email:
+            existing_user = db.query(User).filter(
+                User.email == member_update.email,
+                User.id != member_id
+            ).first()
+            if existing_user:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Email already registered"
+                )
+        member.email = member_update.email
+    
+    if member_update.phone is not None:
+        # Check if phone is already taken by another user
+        if member_update.phone:
+            existing_user = db.query(User).filter(
+                User.phone == member_update.phone,
+                User.id != member_id
+            ).first()
+            if existing_user:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Phone number already registered"
+                )
+        member.phone = member_update.phone
+    
+    if member_update.role is not None:
+        # Validate role value
+        valid_roles = ["member", "pastor", "admin"]
+        if member_update.role not in valid_roles:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid role. Valid roles are: {', '.join(valid_roles)}"
+            )
+        
+        # Security rules for role changes:
+        # 1. Only admins can change roles to/from "admin"
+        # 2. Pastors and admins can change roles to/from "pastor" and "member"
+        # 3. Prevent self-demotion (cannot change your own role to lower privilege)
+        
+        # Check if trying to change to/from admin (only admins can do this)
+        if member_update.role == "admin" or member.role == "admin":
+            if current_user.role != "admin":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Only admins can change roles to/from admin"
+                )
+        
+        # Prevent self-demotion (cannot change your own role to lower privilege)
+        if member_id == current_user.id:
+            current_privilege = 2 if current_user.role == "admin" else (1 if current_user.role == "pastor" else 0)
+            new_privilege = 2 if member_update.role == "admin" else (1 if member_update.role == "pastor" else 0)
+            if new_privilege < current_privilege:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="You cannot change your own role to a lower privilege level"
+                )
+        
+        member.role = member_update.role
+    
+    if member_update.is_active is not None:
+        member.is_active = member_update.is_active
+    
+    db.commit()
+    db.refresh(member)
+    
+    return member
+
+
+@router.post("/members/{member_id}/block", response_model=MemberResponse)
+def block_member(
+    member_id: int,
+    current_user: User = Depends(require_pastor),
+    db: Session = Depends(get_db),
+):
+    """
+    Block a member (set is_active = False) (pastor only).
+    """
+    member = db.query(User).filter(User.id == member_id).first()
+    
+    if not member:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Member not found"
+        )
+    
+    if member.is_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot block deleted member accounts"
+        )
+    
+    if member.role in ["pastor", "admin"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot block pastor/admin accounts"
+        )
+    
+    member.is_active = False
+    db.commit()
+    db.refresh(member)
+    
+    return member
+
+
+@router.post("/members/{member_id}/unblock", response_model=MemberResponse)
+def unblock_member(
+    member_id: int,
+    current_user: User = Depends(require_pastor),
+    db: Session = Depends(get_db),
+):
+    """
+    Unblock a member (set is_active = True) (pastor only).
+    """
+    member = db.query(User).filter(User.id == member_id).first()
+    
+    if not member:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Member not found"
+        )
+    
+    if member.is_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot unblock deleted member accounts"
+        )
+    
+    member.is_active = True
+    db.commit()
+    db.refresh(member)
+    
+    return member
+
+
+@router.get("/members/{member_id}/prayer-requests", response_model=list[PrayerRequestResponse])
+def get_member_prayer_requests(
+    member_id: int,
+    current_user: User = Depends(require_pastor),
+    db: Session = Depends(get_db),
+):
+    """
+    Get all prayer requests for a specific member (pastor only).
+    """
+    member = db.query(User).filter(User.id == member_id).first()
+    
+    if not member:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Member not found"
+        )
+    
+    requests = db.query(PrayerRequest).filter(
+        PrayerRequest.user_id == member_id
+    ).order_by(PrayerRequest.created_at.desc()).all()
+    
+    return [PrayerRequestResponse(**_format_prayer_request_response(req, db, is_pastor_view=True)) for req in requests]
+
+
+@router.get("/members/{member_id}/attendance", response_model=list[AttendanceResponse])
+def get_member_attendance(
+    member_id: int,
+    current_user: User = Depends(require_pastor),
+    db: Session = Depends(get_db),
+):
+    """
+    Get attendance history for a specific member (pastor only).
+    """
+    member = db.query(User).filter(User.id == member_id).first()
+    
+    if not member:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Member not found"
+        )
+    
+    attendance_records = db.query(Attendance).filter(
+        Attendance.user_id == member_id
+    ).order_by(Attendance.joined_at.desc()).all()
+    
+    return attendance_records

@@ -45,7 +45,7 @@ class _MemberPrayerRequestsScreenState extends State<MemberPrayerRequestsScreen>
   Future<void> _loadMyRequests() async {
     setState(() => _loadingRequests = true);
     try {
-      final requests = await EngagementService.getMyPrayerRequests();
+      final requests = await EngagementService.getMyPrayerRequests(context: context);
       if (mounted) {
         setState(() {
           _myRequests = requests;

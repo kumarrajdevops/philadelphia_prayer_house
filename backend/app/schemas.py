@@ -25,6 +25,64 @@ class UserResponse(UserCreate):
         from_attributes = True
 
 
+class MemberResponse(BaseModel):
+    """
+    Response schema for member data (pastor view).
+    Includes all member information for management.
+    """
+    id: int
+    name: str
+    username: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    role: str
+    is_active: bool
+    is_deleted: bool
+    profile_image_url: Optional[str] = None
+    email_verified: bool
+    last_login: Optional[datetime] = None
+    created_at: datetime
+    deleted_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True
+
+
+class MemberUpdate(BaseModel):
+    """
+    Input schema for updating member details (pastor only).
+    """
+    name: Optional[str] = None
+    username: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class MemberDetailResponse(BaseModel):
+    """
+    Detailed member response with related data counts.
+    """
+    id: int
+    name: str
+    username: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    role: str
+    is_active: bool
+    is_deleted: bool
+    profile_image_url: Optional[str] = None
+    email_verified: bool
+    last_login: Optional[datetime] = None
+    created_at: datetime
+    deleted_at: Optional[datetime] = None
+    # Related data counts
+    prayer_requests_count: int = 0
+    attendance_count: int = 0
+    favorites_count: int = 0
+
+
 # =========================
 # Prayer Schemas
 # =========================

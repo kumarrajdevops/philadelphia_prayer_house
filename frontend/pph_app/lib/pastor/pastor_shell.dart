@@ -4,6 +4,7 @@ import '../auth/login_screen.dart';
 import '../auth/auth_service.dart';
 import '../services/profile_service.dart';
 import '../utils/api_client.dart';
+import '../utils/error_handler.dart';
 import 'pastor_home_screen.dart';
 import 'pastor_events_screen.dart';
 import 'pastor_members_screen.dart';
@@ -34,6 +35,22 @@ class _PastorShellState extends State<PastorShell> {
       const PastorMembersScreen(),
       const PastorGalleryScreen(),
     ];
+    // Check user status first - if blocked, will force logout
+    _checkUserStatusAndLoad();
+  }
+
+  /// Check user status first, then load data if user is still active
+  Future<void> _checkUserStatusAndLoad() async {
+    // First, check if user is blocked/deleted
+    await ErrorHandler.checkUserStatus(context);
+    
+    // Re-check if still logged in (might have been logged out by error handler)
+    final isLoggedIn = await AuthService.isLoggedIn();
+    if (!mounted || !isLoggedIn) {
+      return; // User was logged out, don't load data
+    }
+    
+    // User is still active, proceed with loading
     _loadPastorInfo();
   }
 
@@ -43,9 +60,18 @@ class _PastorShellState extends State<PastorShell> {
       pastorName = prefs.getString("name") ?? prefs.getString("username") ?? "Pastor";
     });
     
-    // Load profile image
+    // Load profile image - this also checks user status (blocked/deleted)
     try {
-      final profile = await ProfileService.getProfile();
+      final profile = await ProfileService.getProfile(context: context);
+      
+      // If profile is null, user might have been logged out (blocked/deleted)
+      if (profile == null) {
+        final isLoggedIn = await AuthService.isLoggedIn();
+        if (!isLoggedIn || !mounted) {
+          return; // User was logged out, stop loading
+        }
+      }
+      
       if (profile != null && mounted) {
         setState(() {
           profileImageUrl = profile["profile_image_url"];

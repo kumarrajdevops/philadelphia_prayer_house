@@ -3,17 +3,31 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/material.dart';
 import '../utils/api_client.dart';
+import '../utils/error_handler.dart';
 
 class ProfileService {
   /// Get current user's profile
-  static Future<Map<String, dynamic>?> getProfile() async {
+  static Future<Map<String, dynamic>?> getProfile({BuildContext? context}) async {
     try {
       final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), return null immediately
+      if (headers == null) {
+        return null;
+      }
+      
       final res = await http.get(
         ApiClient.uri("/auth/profile"),
         headers: headers,
       );
+
+      // Check for blocked/deleted user
+      final wasLoggedOut = await ErrorHandler.handleResponse(context, res);
+      if (wasLoggedOut) {
+        return null; // User was logged out
+      }
 
       if (res.statusCode == 200) {
         return jsonDecode(res.body);
@@ -35,6 +49,12 @@ class ProfileService {
   }) async {
     try {
       final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), return null immediately
+      if (headers == null) {
+        return null;
+      }
+      
       final body = <String, dynamic>{};
       if (name != null) body["name"] = name;
       if (username != null) body["username"] = username;
@@ -70,6 +90,12 @@ class ProfileService {
   }) async {
     try {
       final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), throw error
+      if (headers == null) {
+        throw Exception("User not logged in");
+      }
+      
       final res = await http.post(
         ApiClient.uri("/auth/change-password"),
         headers: headers,
@@ -95,6 +121,12 @@ class ProfileService {
   static Future<bool> setPassword(String newPassword) async {
     try {
       final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), throw error
+      if (headers == null) {
+        throw Exception("User not logged in");
+      }
+      
       final res = await http.post(
         ApiClient.uri("/auth/set-password"),
         headers: headers,
@@ -119,6 +151,12 @@ class ProfileService {
   static Future<String?> uploadProfilePicture(File imageFile) async {
     try {
       final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), return null immediately
+      if (headers == null) {
+        return null;
+      }
+      
       // Remove Content-Type for multipart/form-data (http package sets it automatically)
       headers.remove("Content-Type");
 
@@ -137,7 +175,7 @@ class ProfileService {
         "POST",
         ApiClient.uri("/auth/profile/picture"),
       );
-      request.headers.addAll(headers);
+      request.headers.addAll(headers); // headers is not null here due to check above
       request.files.add(
         await http.MultipartFile.fromPath(
           "file",
@@ -166,6 +204,12 @@ class ProfileService {
   static Future<bool> deleteAccount() async {
     try {
       final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), throw error
+      if (headers == null) {
+        throw Exception("User not logged in");
+      }
+      
       final res = await http.delete(
         ApiClient.uri("/auth/account"),
         headers: headers,

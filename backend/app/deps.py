@@ -8,7 +8,9 @@ from fastapi.security import OAuth2PasswordBearer
 from .database import SessionLocal
 from .models import User
 from .auth import get_current_user
-from .routers_module.auth import oauth2_scheme
+
+# OAuth2 scheme for token extraction
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
 def get_db():
@@ -26,7 +28,8 @@ def get_current_active_user(
 ) -> User:
     """
     Get the current authenticated user.
-    Raises 401 if not authenticated or user is inactive.
+    Raises 401 if not authenticated or user is inactive/blocked.
+    Forces logout if user is blocked or deleted.
     """
     user = get_current_user(db, token)
     if not user:
@@ -35,11 +38,21 @@ def get_current_active_user(
             detail="Invalid authentication credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    
+    # Check if user is deleted
+    if user.is_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been deleted. Please contact the pastor or administrator for assistance."
+        )
+    
+    # Check if user is blocked
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is inactive"
+            detail="Your account has been blocked. Please contact the pastor or administrator for assistance."
         )
+    
     return user
 
 

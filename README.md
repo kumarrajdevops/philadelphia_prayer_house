@@ -211,8 +211,26 @@ Authorization: Bearer <access_token>
 
 | Endpoint | Method | Description | Auth Required |
 |----------|--------|-------------|---------------|
-| `/users` | GET | List users | No |
-| `/users` | POST | Create user | No |
+| `/users` | GET | List users | Yes (Pastor/Admin) |
+| `/users` | POST | Create user | Yes (Pastor/Admin) |
+
+### Members Management Endpoints (👥 Pastor/Admin Only)
+
+| Endpoint | Method | Description | Auth Required |
+|----------|--------|-------------|---------------|
+| `/members` | GET | List all members with optional search and filters. Query params: `?search=`, `?role=`, `?is_active=`, `?is_deleted=` | Yes (Pastor/Admin) |
+| `/members/{member_id}` | GET | Get detailed member information including stats (prayer requests count, attendance count, favorites count) | Yes (Pastor/Admin) |
+| `/members/{member_id}` | PUT | Update member details (name, username, email, phone, role, is_active). Body: `{ name?, username?, email?, phone?, role?, is_active? }` | Yes (Pastor/Admin) |
+| `/members/{member_id}/block` | POST | Block a member (set is_active = False) | Yes (Pastor/Admin) |
+| `/members/{member_id}/unblock` | POST | Unblock a member (set is_active = True) | Yes (Pastor/Admin) |
+| `/members/{member_id}/prayer-requests` | GET | Get all prayer requests for a specific member | Yes (Pastor/Admin) |
+| `/members/{member_id}/attendance` | GET | Get attendance history for a specific member | Yes (Pastor/Admin) |
+
+**Role Change Rules:**
+- Only admins can change roles to/from "admin"
+- Pastors and admins can change roles between "member" and "pastor"
+- Users cannot change their own role to a lower privilege level (self-demotion prevention)
+- Cannot block pastor/admin accounts
 
 ### Prayer Endpoints (🛐 Spiritual Gatherings)
 
@@ -355,11 +373,27 @@ Authorization: Bearer <access_token>
 - hashed_password (String, NULLABLE - OTP-only users have NULL)
 - phone (String, UNIQUE, NULLABLE, INDEXED)
 - email (String, UNIQUE, NULLABLE, INDEXED)
-- role (String, default: "member")
-- is_active (Boolean, default: true, NOT NULL)
+- role (String, default: "member")  -- "member", "pastor", or "admin"
+- is_active (Boolean, default: true, NOT NULL, INDEXED)
+- profile_image_url (String, NULLABLE)  -- URL to profile picture
+- email_verified (Boolean, default: false, NOT NULL)
+- last_login (DateTime, timezone, NULLABLE)  -- Last login timestamp
+- is_deleted (Boolean, default: false, NOT NULL, INDEXED)  -- Soft delete flag
+- deleted_at (DateTime, timezone, NULLABLE)  -- When account was deleted
+- anonymized_at (DateTime, timezone, NULLABLE)  -- When account was anonymized
 - created_at (DateTime, timezone)
 - updated_at (DateTime, timezone)
 ```
+
+**Role System:**
+- **member**: Default role for regular users
+- **pastor**: Can manage prayers, events, members, and prayer requests
+- **admin**: Same permissions as pastor, plus can change roles to/from "admin"
+
+**Account Management:**
+- Soft delete: Accounts are marked as deleted (`is_deleted=True`) rather than physically removed
+- Anonymization: Deleted accounts have name/username anonymized, but phone/email preserved for restoration
+- Account restoration: Users can re-register with same phone/email to restore their account
 
 ### Prayers Table (🛐 Spiritual Gatherings)
 
@@ -957,6 +991,13 @@ curl -X POST http://localhost:8000/auth/otp/request \
 - [x] Email OR username login support
 - [x] Token refresh mechanism
 - [x] User profile management (`/auth/me`)
+- [x] User Settings & Profile Management (v1.3)
+  - [x] Password change for users with passwords
+  - [x] Set password for OTP-only users
+  - [x] Email update/verification
+  - [x] Profile edit (name, username)
+  - [x] Profile picture upload
+  - [x] Account deletion (soft delete)
 - [x] Database migrations
 - [x] CORS configuration
 - [x] Role-based access control (Pastor/Admin for prayer creation)
@@ -1009,10 +1050,21 @@ curl -X POST http://localhost:8000/auth/otp/request \
 - [x] Pastor Prayer Request details page with "Mark as Prayed" action
 - [x] Request text anonymization ("This private prayer request has been completed")
 - [x] Sorting by latest timestamp (prayed_at > archived_at > created_at)
+- [x] Members Management system
+  - [x] View all members list with search and filters
+  - [x] Member details page (overview, prayer requests, attendance)
+  - [x] Edit member details (name, username, email, phone)
+  - [x] Block/unblock members
+  - [x] Change member roles (member, pastor, admin)
+  - [x] Member statistics (prayer requests count, attendance count, favorites count)
+- [x] Pastor Home screen statistics
+  - [x] Real-time active members count
+  - [x] Real-time upcoming events count
+  - [x] Auto-refresh for statistics
 
 ### 🚧 In Progress
 
-- [ ] User settings (password change, email update)
+- [x] User settings (password change, email update, profile picture upload) ✅
 
 ### ⚠️ Known Issues / Blockers
 
@@ -1056,13 +1108,14 @@ The Pastor Panel is the control center where pastors manage prayer hall activiti
 
 ### 👥 2. Members Management
 
-- [ ] View all members list
-- [ ] Search by name / phone / prayer group
-- [ ] Filter by role, status, prayer group
-- [ ] Approve or block new registrations
+- [x] View all members list ✅
+- [x] Search by name / phone / email ✅
+- [x] Filter by role, status, deleted status ✅
+- [x] Block/unblock members ✅
+- [x] Member profile view (attendance, prayer requests, stats) ✅
+- [x] Edit member details (name, username, email, phone) ✅
+- [x] Change member roles (member, pastor, admin) ✅
 - [ ] Assign members to prayer groups
-- [ ] Member profile view (attendance, prayer requests)
-- [ ] Edit member details
 - [ ] Member activity history
 - [ ] Export members list (CSV/PDF)
 
@@ -1206,18 +1259,19 @@ The Pastor Panel is the control center where pastors manage prayer hall activiti
    - Secure admin login (Password/OTP)
    - Members management (view, search, filter)
 
-2. **User Settings & Profile Management**
-   - Password change for users with passwords
-   - Set password for OTP-only users
-   - Email update/verification
-   - Profile edit (name, username)
+2. ~~**User Settings & Profile Management**~~ ✅ **COMPLETED**
+   - ✅ Password change for users with passwords
+   - ✅ Set password for OTP-only users
+   - ✅ Email update/verification
+   - ✅ Profile edit (name, username)
+   - ✅ Profile picture upload
 
-3. **Prayer Requests Feature**
-   - Create prayer_requests table
-   - Add API endpoints (create, list, update, delete, categorize)
-   - Privacy settings (private/public)
-   - Flutter UI for prayer requests (member view)
-   - Pastor panel for prayer request management
+3. ~~**Prayer Requests Feature**~~ ✅ **COMPLETED**
+   - ✅ Create prayer_requests table
+   - ✅ Add API endpoints (create, list, update, delete, categorize)
+   - ✅ Privacy settings (private/public)
+   - ✅ Flutter UI for prayer requests (member view)
+   - ✅ Pastor panel for prayer request management
 
 ### Short Term (Priority 2)
 4. **Announcements Management**
@@ -1296,7 +1350,67 @@ Private project for Philadelphia Prayer House
 
 ## 📝 Recent Updates
 
-### Latest Features (2026-01-19)
+### Latest Features (2026-01-20)
+- ✅ **Members Management System** - Complete implementation
+  - Backend: Members API with search, filter, and management endpoints
+  - Database: Enhanced user model with profile fields (profile_image_url, email_verified, last_login, is_deleted, deleted_at, anonymized_at)
+  - Member Details Page:
+    - Overview tab with profile, stats, contact info, account info
+    - Prayer Requests tab showing member's prayer requests
+    - Attendance tab showing member's attendance history
+    - Role management (change member roles: member, pastor, admin)
+    - Block/unblock functionality
+  - Members List:
+    - Search by name, username, phone, email
+    - Filter by role, active status, deleted status
+    - Navigation to member details
+  - Security:
+    - Only admins can change roles to/from "admin"
+    - Pastors and admins can change roles between "member" and "pastor"
+    - Prevents self-demotion (cannot change own role to lower privilege)
+    - Cannot block pastor/admin accounts
+  - Role Change Feature:
+    - UI dialog for selecting new role
+    - Confirmation before role change
+    - Real-time role updates
+- ✅ **Pastor Home Screen Enhancements**
+  - Real-time active members count (fetches from API, filters active non-deleted members)
+  - Real-time upcoming events count (calculates future events, excludes completed)
+  - Auto-refresh for statistics (every 45 seconds)
+  - Replaced mock values with actual data
+- ✅ **User Settings & Profile Management (v1.3)** - Complete implementation
+  - Password Management:
+    - Change password for users with existing passwords
+    - Set password for OTP-only users (enables future password login)
+    - Password validation and security
+  - Profile Management:
+    - Edit name and username
+    - Update email (optional)
+    - Profile picture upload (JPEG, PNG, WebP)
+    - Profile image display in drawer menu
+  - Account Management:
+    - Soft delete account (anonymizes name/username, preserves audit trail)
+    - Account restoration (if user re-registers with same phone/email)
+  - Security:
+    - Email verification status tracking
+    - Last login timestamp
+    - Account deletion with audit preservation
+- ✅ **Security Hardening & Bug Fixes**
+  - Blocked user management:
+    - Blocked users cannot login (password or OTP)
+    - Immediate forced logout when user is blocked
+    - Clear error messages ("Your account has been blocked. Please contact the pastor or administrator for assistance.")
+  - Authentication hardening:
+    - All protected endpoints use consistent auth dependencies
+    - Token validity checks on every request
+    - is_active and is_deleted checks enforced
+    - Centralized error handling (401/403 responses)
+  - Null safety fixes:
+    - All service methods handle null headers gracefully
+    - Prevents API calls when user is logged out
+    - Proper error handling throughout
+
+### Previous Features (2026-01-19)
 - ✅ **Prayer Requests System (v1.1)** - Complete implementation
   - Backend: Prayer requests API with public/private types and strict privacy rules
   - Database: `prayer_requests` table with lifecycle support (submitted → prayed → archived)
@@ -1403,4 +1517,17 @@ Private project for Philadelphia Prayer House
 ---
 
 **Status:** 🚧 In Active Development  
-**Last Updated:** 2026-01-19
+**Last Updated:** 2026-01-20
+
+
+
+Summary Cheat Sheet (Quick)
+tasklist | grep -i emulator       # List emulator frontend
+tasklist | grep -i qemu           # List emulator VM(s)
+adb devices                       # Show emulator device IDs
+netstat -ano | grep 5554          # Map port 5554 → PID
+netstat -ano | grep 5556          # Map port 5556 → PID
+tasklist | grep <PID>             # Who owns this PID?
+taskkill //PID <PID> //F          # Kill specific emulator
+taskkill //IM qemu-system-x86_64.exe //F  # Kill all VMs
+adb kill-server && adb start-server        # Restart adb

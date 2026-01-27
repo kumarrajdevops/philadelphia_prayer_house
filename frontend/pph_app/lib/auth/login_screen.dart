@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'auth_service.dart';
 import '../pastor/pastor_shell.dart';
-import '../member/member_home_screen.dart';
+import '../member/member_shell.dart';
 import 'otp_request_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -55,18 +55,17 @@ class _LoginScreenState extends State<LoginScreen> {
         } else {
           Navigator.pushAndRemoveUntil(
             context,
-            MaterialPageRoute(builder: (_) => const MemberHomeScreen()),
+            MaterialPageRoute(builder: (_) => const MemberShell()),
             (_) => false,
           );
         }
-      } else if (mounted) {
-        setState(() => error = "Invalid username/email or password");
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
         loading = false;
-        error = "Connection error. Please try again.";
+        // Display the actual error message from the backend
+        error = e.toString().replaceFirst("Exception: ", "");
       });
       print("Login exception: $e");
     }

@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:flutter/material.dart';
 import '../utils/api_client.dart';
+import '../utils/error_handler.dart';
 import '../auth/auth_service.dart';
 
 class EngagementService {
@@ -23,6 +25,11 @@ class EngagementService {
       }
 
       final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), return false immediately
+      if (headers == null) {
+        return false;
+      }
       
       // Double-check: Verify Authorization header is present
       if (!headers.containsKey("Authorization")) {
@@ -66,6 +73,12 @@ class EngagementService {
       }
 
       final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), return null immediately
+      if (headers == null) {
+        return null;
+      }
+      
       final body = jsonEncode({
         if (prayerSeriesId != null) "prayer_series_id": prayerSeriesId,
         if (eventSeriesId != null) "event_series_id": eventSeriesId,
@@ -93,6 +106,12 @@ class EngagementService {
   static Future<bool> removeFavorite(int favoriteId) async {
     try {
       final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), return false immediately
+      if (headers == null) {
+        return false;
+      }
+      
       final res = await http.delete(
         ApiClient.uri("/favorites/$favoriteId"),
         headers: headers,
@@ -143,6 +162,12 @@ class EngagementService {
       }
 
       final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), return null immediately
+      if (headers == null) {
+        return null;
+      }
+      
       final body = jsonEncode({
         if (prayerSeriesId != null) "prayer_series_id": prayerSeriesId,
         if (eventSeriesId != null) "event_series_id": eventSeriesId,
@@ -172,6 +197,12 @@ class EngagementService {
   static Future<bool> updateReminder(int reminderId, bool isEnabled) async {
     try {
       final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), return false immediately
+      if (headers == null) {
+        return false;
+      }
+      
       final body = jsonEncode({
         "is_enabled": isEnabled,
       });
@@ -193,6 +224,12 @@ class EngagementService {
   static Future<List<Map<String, dynamic>>> getReminders() async {
     try {
       final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), return empty list immediately
+      if (headers == null) {
+        return [];
+      }
+      
       final res = await http.get(
         ApiClient.uri("/reminders"),
         headers: headers,
@@ -217,6 +254,12 @@ class EngagementService {
   }) async {
     try {
       final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), return null immediately
+      if (headers == null) {
+        return null;
+      }
+      
       final body = jsonEncode({
         "request_text": requestText,
         "request_type": requestType,
@@ -244,6 +287,12 @@ class EngagementService {
   static Future<List<Map<String, dynamic>>> getPrayerRequests({String? statusFilter}) async {
     try {
       final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), return empty list immediately
+      if (headers == null) {
+        return [];
+      }
+      
       final uri = statusFilter != null
           ? ApiClient.uri("/prayer-requests?status_filter=$statusFilter")
           : ApiClient.uri("/prayer-requests");
@@ -266,13 +315,25 @@ class EngagementService {
   }
 
   /// Get current user's own prayer requests (members only)
-  static Future<List<Map<String, dynamic>>> getMyPrayerRequests() async {
+  static Future<List<Map<String, dynamic>>> getMyPrayerRequests({BuildContext? context}) async {
     try {
       final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), return empty list immediately
+      if (headers == null) {
+        return [];
+      }
+      
       final res = await http.get(
         ApiClient.uri("/prayer-requests/my"),
         headers: headers,
       );
+
+      // Check for 401/403 errors
+      final wasLoggedOut = await ErrorHandler.handleResponse(context, res);
+      if (wasLoggedOut) {
+        return []; // User was logged out
+      }
 
       if (res.statusCode == 200) {
         return List<Map<String, dynamic>>.from(jsonDecode(res.body));
@@ -290,6 +351,12 @@ class EngagementService {
   static Future<Map<String, dynamic>?> getPrayerRequestById(int requestId) async {
     try {
       final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), return null immediately
+      if (headers == null) {
+        return null;
+      }
+      
       final res = await http.get(
         ApiClient.uri("/prayer-requests/$requestId"),
         headers: headers,
@@ -315,6 +382,12 @@ class EngagementService {
       }
 
       final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), return false immediately
+      if (headers == null) {
+        return false;
+      }
+      
       final body = jsonEncode({
         "status": status,
       });

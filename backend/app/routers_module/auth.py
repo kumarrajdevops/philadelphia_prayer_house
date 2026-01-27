@@ -30,12 +30,11 @@ from ..auth import (
     generate_otp,
     verify_password,
 )
+from ..deps import get_current_active_user, oauth2_scheme
 from ..config import settings
 from fastapi import UploadFile, File
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
 # =========================
@@ -184,19 +183,37 @@ def register(user_data: UserRegister, db: Session = Depends(get_db)):
                 detail="Username already registered"
             )
         
-        # Check if phone exists
-        if user_data.phone and db.query(User).filter(User.phone == user_data.phone).first():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Phone number already registered"
-            )
+        # Check if phone exists (active users only)
+        if user_data.phone:
+            existing_phone_user = db.query(User).filter(User.phone == user_data.phone, User.is_deleted == False).first()
+            if existing_phone_user:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Phone number already registered"
+                )
+            # Check for deleted user with same phone (for restoration)
+            deleted_phone_user = db.query(User).filter(User.phone == user_data.phone, User.is_deleted == True).first()
+            if deleted_phone_user:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="This phone number was previously registered. Please use OTP login to restore your account."
+                )
         
-        # Check if email exists
-        if user_data.email and db.query(User).filter(User.email == user_data.email).first():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
-            )
+        # Check if email exists (active users only)
+        if user_data.email:
+            existing_email_user = db.query(User).filter(User.email == user_data.email, User.is_deleted == False).first()
+            if existing_email_user:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Email already registered"
+                )
+            # Check for deleted user with same email (for restoration)
+            deleted_email_user = db.query(User).filter(User.email == user_data.email, User.is_deleted == True).first()
+            if deleted_email_user:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="This email was previously registered. Please use OTP login to restore your account."
+                )
         
         # Create user
         hashed_password = get_password_hash(user_data.password)
@@ -237,14 +254,32 @@ def login(
     Note: Only works if user has set a password during registration.
     OTP-only users should use OTP login instead.
     """
+    # First, check if user exists (before checking password)
+    temp_user = db.query(User).filter(
+        (User.username == form_data.username) | (User.email == form_data.username)
+    ).first()
+    
+    # Check if user is blocked FIRST (before password check)
+    if temp_user and not temp_user.is_active and not temp_user.is_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been blocked. Please contact the pastor or administrator for assistance.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Check if user is deleted
+    if temp_user and temp_user.is_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been deleted. Please contact the pastor or administrator for assistance.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Now try to authenticate
     user = authenticate_user(db, form_data.username, form_data.password)
     
     if not user:
         # Check if user exists but has no password (OTP-only)
-        temp_user = db.query(User).filter(
-            (User.username == form_data.username) | (User.email == form_data.username)
-        ).first()
-        
         if temp_user and not temp_user.hashed_password:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -341,18 +376,47 @@ def verify_otp_login(otp_data: OTPVerify, db: Session = Depends(get_db)):
             detail="Invalid or expired OTP. Please try again."
         )
     
-    # Check if user exists
+    # Check if active user exists
     user = get_user_by_phone_or_email(db, phone=otp_data.phone, email=otp_data.email)
     
+    # If no active user, check for blocked or deleted user
     if not user:
-        # Register new user
+        # Check for blocked user (exists but is_active = False)
+        blocked_user = None
+        if otp_data.phone:
+            blocked_user = db.query(User).filter(
+                User.phone == otp_data.phone,
+                User.is_deleted == False,
+                User.is_active == False
+            ).first()
+        elif otp_data.email:
+            blocked_user = db.query(User).filter(
+                User.email == otp_data.email,
+                User.is_deleted == False,
+                User.is_active == False
+            ).first()
+        
+        if blocked_user:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your account has been blocked. Please contact the pastor or administrator for assistance."
+            )
+        
+        # Check for deleted user (for account restoration)
+        from ..auth import get_deleted_user_by_phone_or_email
+        deleted_user = get_deleted_user_by_phone_or_email(db, phone=otp_data.phone, email=otp_data.email)
+    else:
+        deleted_user = None
+    
+    if not user and not deleted_user:
+        # Register completely new user
         if not otp_data.name or not otp_data.username:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Name and username are required for new user registration. Please check 'New user? Register with OTP' and fill the details."
             )
         
-        # Check if username exists
+        # Check if username exists (including deleted users)
         existing_username = db.query(User).filter(User.username == otp_data.username).first()
         if existing_username:
             raise HTTPException(
@@ -360,7 +424,7 @@ def verify_otp_login(otp_data: OTPVerify, db: Session = Depends(get_db)):
                 detail="Username already taken. Please choose a different username."
             )
         
-        # Check if email already exists (if provided)
+        # Check if email already exists (if provided, including deleted users)
         if otp_data.email_optional:
             existing_email = db.query(User).filter(User.email == otp_data.email_optional).first()
             if existing_email:
@@ -424,6 +488,68 @@ def verify_otp_login(otp_data: OTPVerify, db: Session = Depends(get_db)):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Registration failed: {error_msg}"
             )
+    elif deleted_user:
+        # Restore deleted user account with new details
+        if not otp_data.name or not otp_data.username:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Name and username are required for account restoration. Please check 'New user? Register with OTP' and fill the details."
+            )
+        
+        # Check if new username is available (must be different from deleted username)
+        if otp_data.username != deleted_user.username:
+            existing_username = db.query(User).filter(User.username == otp_data.username).first()
+            if existing_username:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Username already taken. Please choose a different username."
+                )
+        
+        # Restore the deleted user account
+        import uuid as uuid_lib
+        deleted_user.is_deleted = False
+        deleted_user.deleted_at = None
+        deleted_user.anonymized_at = None
+        deleted_user.name = otp_data.name
+        deleted_user.username = otp_data.username
+        deleted_user.is_active = True
+        
+        # Update email if provided
+        if otp_data.email_optional:
+            # Check if new email is available
+            if otp_data.email_optional != deleted_user.email:
+                existing_email = db.query(User).filter(User.email == otp_data.email_optional).first()
+                if existing_email:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Email already registered. Please use a different email."
+                    )
+            deleted_user.email = otp_data.email_optional
+        elif otp_data.email and "@" in str(otp_data.email):
+            # Use email from OTP if it was email-based
+            if otp_data.email != deleted_user.email:
+                existing_email = db.query(User).filter(User.email == otp_data.email).first()
+                if existing_email:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Email already registered. Please use a different email."
+                    )
+            deleted_user.email = otp_data.email
+        
+        # Set password if provided
+        if otp_data.password:
+            deleted_user.hashed_password = get_password_hash(otp_data.password)
+        
+        # Phone is already set (we kept it during deletion)
+        # No need to update it
+        
+        user = deleted_user
+        db.commit()
+        db.refresh(user)
+        
+        # Mark OTP as verified
+        otp_record.is_verified = True
+        db.commit()
     else:
         # User exists - just login
         # Mark OTP as verified
@@ -481,10 +607,24 @@ def refresh_token(token_data: TokenRefresh, db: Session = Depends(get_db)):
     
     user = db.query(User).filter(User.id == user_id).first()
     
-    if not user or not user.is_active:
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or inactive"
+            detail="User not found"
+        )
+    
+    # Check if user is deleted
+    if user.is_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been deleted. Please contact the pastor or administrator for assistance."
+        )
+    
+    # Check if user is blocked
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been blocked. Please contact the pastor or administrator for assistance."
         )
     
     # Create new tokens
@@ -504,18 +644,10 @@ def refresh_token(token_data: TokenRefresh, db: Session = Depends(get_db)):
 
 @router.get("/me", response_model=UserResponse)
 def get_current_user_info(
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_active_user)
 ):
     """Get current authenticated user information."""
-    from ..auth import get_current_user as get_user_from_token
-    user = get_user_from_token(db, token)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials"
-        )
-    return user
+    return current_user
 
 
 # =========================
@@ -524,31 +656,22 @@ def get_current_user_info(
 
 @router.get("/profile", response_model=ProfileResponse)
 def get_profile(
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_active_user)
 ):
     """Get current user's full profile information."""
-    from ..auth import get_current_user as get_user_from_token
-    user = get_user_from_token(db, token)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials"
-        )
-    
     # Return profile with has_password flag
     profile_dict = {
-        "id": user.id,
-        "name": user.name,
-        "username": user.username,
-        "role": user.role,
-        "phone": user.phone,
-        "email": user.email,
-        "profile_image_url": user.profile_image_url,
-        "email_verified": user.email_verified,
-        "last_login": user.last_login,
-        "has_password": user.hashed_password is not None,
-        "created_at": user.created_at,
+        "id": current_user.id,
+        "name": current_user.name,
+        "username": current_user.username,
+        "role": current_user.role,
+        "phone": current_user.phone,
+        "email": current_user.email,
+        "profile_image_url": current_user.profile_image_url,
+        "email_verified": current_user.email_verified,
+        "last_login": current_user.last_login,
+        "has_password": current_user.hashed_password is not None,
+        "created_at": current_user.created_at,
     }
     return ProfileResponse(**profile_dict)
 
@@ -556,74 +679,59 @@ def get_profile(
 @router.put("/profile", response_model=ProfileResponse)
 def update_profile(
     profile_data: ProfileUpdate,
-    token: str = Depends(oauth2_scheme),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """Update user profile (name, username, email)."""
-    from ..auth import get_current_user as get_user_from_token
-    user = get_user_from_token(db, token)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials"
-        )
-    
-    # Check if user is deleted
-    if user.is_deleted:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account has been deleted"
-        )
-    
     # Update name if provided
     if profile_data.name is not None:
-        user.name = profile_data.name
+        current_user.name = profile_data.name
     
     # Update username if provided (with uniqueness check)
     if profile_data.username is not None:
-        if profile_data.username != user.username:
+        if profile_data.username != current_user.username:
             existing_user = db.query(User).filter(
                 User.username == profile_data.username,
-                User.id != user.id
+                User.id != current_user.id
             ).first()
             if existing_user:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Username already taken"
                 )
-            user.username = profile_data.username
+            current_user.username = profile_data.username
     
     # Update email if provided (with uniqueness check)
     if profile_data.email is not None:
-        if profile_data.email != user.email:
+        if profile_data.email != current_user.email:
             existing_user = db.query(User).filter(
                 User.email == profile_data.email,
-                User.id != user.id
+                User.id != current_user.id
             ).first()
             if existing_user:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Email already registered"
                 )
-            user.email = profile_data.email
-            user.email_verified = False  # Reset verification on email change
+            current_user.email = profile_data.email
+            current_user.email_verified = False  # Reset verification on email change
     
     db.commit()
-    db.refresh(user)
+    db.refresh(current_user)
     
     # Return updated profile
     profile_dict = {
-        "id": user.id,
-        "name": user.name,
-        "username": user.username,
-        "role": user.role,
-        "phone": user.phone,
-        "email": user.email,
-        "profile_image_url": user.profile_image_url,
-        "email_verified": user.email_verified,
-        "last_login": user.last_login,
-        "has_password": user.hashed_password is not None,
-        "created_at": user.created_at,
+        "id": current_user.id,
+        "name": current_user.name,
+        "username": current_user.username,
+        "role": current_user.role,
+        "phone": current_user.phone,
+        "email": current_user.email,
+        "profile_image_url": current_user.profile_image_url,
+        "email_verified": current_user.email_verified,
+        "last_login": current_user.last_login,
+        "has_password": current_user.hashed_password is not None,
+        "created_at": current_user.created_at,
     }
     return ProfileResponse(**profile_dict)
 
@@ -631,34 +739,26 @@ def update_profile(
 @router.post("/change-password", status_code=status.HTTP_200_OK)
 def change_password(
     password_data: PasswordChange,
-    token: str = Depends(oauth2_scheme),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """Change password for users with existing password."""
-    from ..auth import get_current_user as get_user_from_token
-    user = get_user_from_token(db, token)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials"
-        )
-    
     # Check if user has password
-    if not user.hashed_password:
+    if not current_user.hashed_password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Password not set. Use /auth/set-password instead."
         )
     
     # Verify current password
-    if not verify_password(password_data.current_password, user.hashed_password):
+    if not verify_password(password_data.current_password, current_user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Current password is incorrect"
         )
     
     # Update password
-    user.hashed_password = get_password_hash(password_data.new_password)
+    current_user.hashed_password = get_password_hash(password_data.new_password)
     db.commit()
     
     return {"message": "Password changed successfully"}
@@ -667,27 +767,19 @@ def change_password(
 @router.post("/set-password", status_code=status.HTTP_200_OK)
 def set_password(
     password_data: PasswordSet,
-    token: str = Depends(oauth2_scheme),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """Set password for OTP-only users."""
-    from ..auth import get_current_user as get_user_from_token
-    user = get_user_from_token(db, token)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials"
-        )
-    
     # Check if password already set
-    if user.hashed_password:
+    if current_user.hashed_password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Password already set. Use /auth/change-password to update it."
         )
     
     # Set password
-    user.hashed_password = get_password_hash(password_data.new_password)
+    current_user.hashed_password = get_password_hash(password_data.new_password)
     db.commit()
     
     return {"message": "Password set successfully. You can now login with username/email and password."}
@@ -696,17 +788,10 @@ def set_password(
 @router.post("/profile/picture", status_code=status.HTTP_200_OK)
 async def upload_profile_picture(
     file: UploadFile = File(...),
-    token: str = Depends(oauth2_scheme),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """Upload profile picture."""
-    from ..auth import get_current_user as get_user_from_token
-    user = get_user_from_token(db, token)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials"
-        )
     
     # Validate file type (check both content_type and file extension)
     file_ext = Path(file.filename or "").suffix.lower()
@@ -737,12 +822,12 @@ async def upload_profile_picture(
     # Generate unique filename (use .jpg as default if extension not detected)
     if not file_ext:
         file_ext = ".jpg"
-    unique_filename = f"{user.id}_{uuid.uuid4().hex}{file_ext}"
+    unique_filename = f"{current_user.id}_{uuid.uuid4().hex}{file_ext}"
     file_path = upload_dir / unique_filename
     
     # Delete old profile picture if exists
-    if user.profile_image_url:
-        old_file_path = Path(user.profile_image_url.replace("/", os.sep))
+    if current_user.profile_image_url:
+        old_file_path = Path(settings.PROFILE_IMAGES_DIR) / Path(current_user.profile_image_url).name
         if old_file_path.exists():
             try:
                 old_file_path.unlink()
@@ -754,28 +839,20 @@ async def upload_profile_picture(
         f.write(file_content)
     
     # Update user profile_image_url (relative path for serving)
-    user.profile_image_url = f"profiles/{unique_filename}"
+    current_user.profile_image_url = f"profiles/{unique_filename}"
     db.commit()
     
-    return {"message": "Profile picture uploaded successfully", "profile_image_url": user.profile_image_url}
+    return {"message": "Profile picture uploaded successfully", "profile_image_url": current_user.profile_image_url}
 
 
 @router.delete("/account", status_code=status.HTTP_200_OK)
 def delete_account(
-    token: str = Depends(oauth2_scheme),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """Soft delete user account with anonymization."""
-    from ..auth import get_current_user as get_user_from_token
-    user = get_user_from_token(db, token)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials"
-        )
-    
     # Check if already deleted
-    if user.is_deleted:
+    if current_user.is_deleted:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Account already deleted"
@@ -783,25 +860,27 @@ def delete_account(
     
     # Soft delete and anonymize
     import uuid as uuid_lib
-    user.is_deleted = True
-    user.deleted_at = datetime.utcnow()
-    user.anonymized_at = datetime.utcnow()
-    user.name = "Deleted User"
-    user.username = f"deleted_{uuid_lib.uuid4().hex[:8]}"
-    user.email = None
-    user.phone = None
-    user.hashed_password = None
-    user.is_active = False
+    current_user.is_deleted = True
+    current_user.deleted_at = datetime.utcnow()
+    current_user.anonymized_at = datetime.utcnow()
+    current_user.name = "Deleted User"
+    current_user.username = f"deleted_{uuid_lib.uuid4().hex[:8]}"
+    # Keep email and phone for potential account restoration (don't set to None)
+    # This allows matching deleted users by phone/email for re-registration
+    # current_user.email = None  # Keep email for restoration matching
+    # current_user.phone = None  # Keep phone for restoration matching
+    current_user.hashed_password = None
+    current_user.is_active = False
     
     # Delete profile picture
-    if user.profile_image_url:
-        file_path = Path(settings.PROFILE_IMAGES_DIR) / Path(user.profile_image_url).name
+    if current_user.profile_image_url:
+        file_path = Path(settings.PROFILE_IMAGES_DIR) / Path(current_user.profile_image_url).name
         if file_path.exists():
             try:
                 file_path.unlink()
             except Exception:
                 pass
-        user.profile_image_url = None
+        current_user.profile_image_url = None
     
     db.commit()
     

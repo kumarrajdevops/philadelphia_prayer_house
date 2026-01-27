@@ -28,8 +28,18 @@ class AuthService {
           "name": data["name"] ?? data["username"] ?? "",
         };
       } else {
+        // Extract error message from response
         print("Login failed: ${res.statusCode} - ${res.body}");
-        return null;
+        try {
+          final errorData = jsonDecode(res.body);
+          throw Exception(errorData["detail"] ?? "Login failed");
+        } catch (e) {
+          // If parsing fails, throw with generic message
+          if (e is Exception) {
+            rethrow;
+          }
+          throw Exception("Login failed. Please try again.");
+        }
       }
     } catch (e) {
       print("Login error: $e");

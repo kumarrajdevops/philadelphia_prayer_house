@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:flutter/material.dart';
 import '../utils/api_client.dart';
+import '../utils/error_handler.dart';
 
 class PrayerService {
   /// Create a new prayer
@@ -53,12 +55,25 @@ class PrayerService {
   }
 
   /// Get all prayers
-  static Future<List<Map<String, dynamic>>> getAllPrayers() async {
+  static Future<List<Map<String, dynamic>>> getAllPrayers({BuildContext? context}) async {
     try {
+      final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), return empty list immediately
+      if (headers == null) {
+        return [];
+      }
+      
       final res = await http.get(
         ApiClient.uri("/prayers"),
-        headers: {"Content-Type": "application/json"},
+        headers: headers,
       );
+
+      // Check for 401/403 errors
+      final wasLoggedOut = await ErrorHandler.handleResponse(context, res);
+      if (wasLoggedOut) {
+        return []; // User was logged out
+      }
 
       if (res.statusCode == 200) {
         final List<dynamic> data = jsonDecode(res.body);
@@ -270,16 +285,30 @@ class PrayerService {
   /// Get all prayer occurrences
   static Future<List<Map<String, dynamic>>> getPrayerOccurrences({
     String? tab, // "today", "upcoming", "past"
+    BuildContext? context,
   }) async {
     try {
+      final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), return empty list immediately
+      if (headers == null) {
+        return [];
+      }
+      
       final uri = tab != null
           ? ApiClient.uri("/prayers/occurrences?tab=$tab")
           : ApiClient.uri("/prayers/occurrences");
       
       final res = await http.get(
         uri,
-        headers: {"Content-Type": "application/json"},
+        headers: headers,
       );
+
+      // Check for 401/403 errors
+      final wasLoggedOut = await ErrorHandler.handleResponse(context, res);
+      if (wasLoggedOut) {
+        return []; // User was logged out
+      }
 
       if (res.statusCode == 200) {
         final List<dynamic> data = jsonDecode(res.body);

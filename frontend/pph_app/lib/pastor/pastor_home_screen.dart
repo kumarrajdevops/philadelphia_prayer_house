@@ -7,6 +7,8 @@ import '../auth/login_screen.dart';
 import '../auth/auth_service.dart';
 import '../services/prayer_service.dart';
 import '../services/event_service.dart';
+import '../services/member_service.dart';
+import '../utils/error_handler.dart';
 import 'create_prayer_screen.dart';
 import 'create_event_screen.dart';
 import 'prayer_details_screen.dart';
@@ -36,10 +38,10 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
   Timer? _autoRefreshTimer;
   static const Duration _autoRefreshInterval = Duration(seconds: 45); // 45 seconds - balance between updates and battery
 
-  // Mock stats - replace with API calls later
-  int totalMembers = 125;
-  int totalFamilies = 45;
-  int upcomingEvents = 3;
+  // Stats
+  int totalMembers = 0; // Active members count
+  int totalFamilies = 45; // TODO: Implement families feature
+  int upcomingEvents = 0; // Upcoming events count
 
   Future<void> _logout() async {
     final confirmed = await showDialog<bool>(
@@ -78,6 +80,8 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
     _loadPastorInfo();
     _loadTodayPrayers();
     _loadTodayEvents();
+    _loadActiveMembersCount();
+    _loadUpcomingEventsCount();
     _startAutoRefresh();
   }
   
@@ -93,6 +97,8 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
     super.didChangeAppLifecycleState(state);
     // Force refresh when app comes to foreground
     if (state == AppLifecycleState.resumed) {
+      // Check if user is blocked/deleted when app resumes
+      ErrorHandler.checkUserStatus(context);
       _loadTodayPrayers();
       _loadTodayEvents();
       _startAutoRefresh(); // Restart timer
@@ -107,6 +113,8 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
       if (mounted) {
         _loadTodayPrayers(silent: true); // Silent refresh - no loading indicator
         _loadTodayEvents(silent: true);
+        _loadActiveMembersCount(silent: true);
+        _loadUpcomingEventsCount(silent: true);
       }
     });
   }
@@ -119,6 +127,61 @@ class _PastorHomeScreenState extends State<PastorHomeScreen> with WidgetsBinding
       pastorName = prefs.getString("name") ?? prefs.getString("username") ?? "Pastor";
       loading = false;
     });
+  }
+
+  Future<void> _loadActiveMembersCount({bool silent = false}) async {
+    try {
+      // Fetch only active, non-deleted members
+      final members = await MemberService.getMembers(
+        isActive: true,
+        isDeleted: false,
+      );
+      
+      if (mounted) {
+        setState(() {
+          totalMembers = members.length;
+        });
+      }
+    } catch (e) {
+      print("Failed to load active members count: $e");
+      // Don't update state on error - keep previous count
+    }
+  }
+
+  Future<void> _loadUpcomingEventsCount({bool silent = false}) async {
+    try {
+      final allEvents = await EventService.getEventOccurrences();
+      
+      // Filter for upcoming events (future events, not completed)
+      final now = DateTime.now();
+      
+      final upcomingEventsList = allEvents.where((event) {
+        final startStr = event['start_datetime'] as String?;
+        final status = (event['status'] as String? ?? '').toLowerCase();
+        
+        // Exclude completed events
+        if (status == 'completed') return false;
+        
+        if (startStr == null) return false;
+        
+        try {
+          final start = DateTime.parse(startStr).toLocal();
+          // Count events that start in the future
+          return start.isAfter(now);
+        } catch (e) {
+          return false;
+        }
+      }).toList();
+      
+      if (mounted) {
+        setState(() {
+          upcomingEvents = upcomingEventsList.length;
+        });
+      }
+    } catch (e) {
+      print("Failed to load upcoming events count: $e");
+      // Don't update state on error - keep previous count
+    }
   }
 
   Future<void> _loadTodayPrayers({bool silent = false}) async {

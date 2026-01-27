@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:flutter/material.dart';
 import '../utils/api_client.dart';
+import '../utils/error_handler.dart';
 
 class EventService {
   /// Preview event occurrences before creation
@@ -105,13 +107,26 @@ class EventService {
 
   /// Get all event occurrences
   /// tab: "today", "upcoming", "past", or null for all
-  static Future<List<Map<String, dynamic>>> getEventOccurrences({String? tab}) async {
+  static Future<List<Map<String, dynamic>>> getEventOccurrences({String? tab, BuildContext? context}) async {
     try {
+      final headers = await ApiClient.authHeaders();
+      
+      // If no headers (user logged out), return empty list immediately
+      if (headers == null) {
+        return [];
+      }
+      
       final queryParam = tab != null ? "?tab=$tab" : "";
       final res = await http.get(
         ApiClient.uri("/events/occurrences$queryParam"),
-        headers: {"Content-Type": "application/json"},
+        headers: headers,
       );
+
+      // Check for 401/403 errors
+      final wasLoggedOut = await ErrorHandler.handleResponse(context, res);
+      if (wasLoggedOut) {
+        return []; // User was logged out
+      }
 
       if (res.statusCode == 200) {
         final List<dynamic> data = jsonDecode(res.body);

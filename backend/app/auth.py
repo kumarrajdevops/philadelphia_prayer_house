@@ -242,16 +242,36 @@ def authenticate_user(db: Session, username: str, password: str) -> Optional[Use
 
 
 def get_user_by_phone_or_email(db: Session, phone: Optional[str] = None, email: Optional[str] = None) -> Optional[User]:
-    """Get a user by phone or email."""
+    """Get a user by phone or email (active, non-deleted users only)."""
     if phone:
-        return db.query(User).filter(User.phone == phone).first()
+        return db.query(User).filter(
+            User.phone == phone,
+            User.is_deleted == False,
+            User.is_active == True
+        ).first()
     if email:
-        return db.query(User).filter(User.email == email).first()
+        return db.query(User).filter(
+            User.email == email,
+            User.is_deleted == False,
+            User.is_active == True
+        ).first()
+    return None
+
+
+def get_deleted_user_by_phone_or_email(db: Session, phone: Optional[str] = None, email: Optional[str] = None) -> Optional[User]:
+    """Get a deleted user by phone or email (for account restoration)."""
+    if phone:
+        return db.query(User).filter(User.phone == phone, User.is_deleted == True).first()
+    if email:
+        return db.query(User).filter(User.email == email, User.is_deleted == True).first()
     return None
 
 
 def get_current_user(db: Session, token: str) -> Optional[User]:
-    """Get the current user from a JWT token."""
+    """
+    Get the current user from a JWT token.
+    Returns the user even if inactive/deleted - let get_current_active_user handle status checks.
+    """
     payload = verify_token(token)
     
     if payload is None:
@@ -269,8 +289,6 @@ def get_current_user(db: Session, token: str) -> Optional[User]:
     
     user = db.query(User).filter(User.id == user_id).first()
     
-    if not user or not user.is_active:
-        return None
-    
+    # Return user even if inactive/deleted - get_current_active_user will check status
     return user
 

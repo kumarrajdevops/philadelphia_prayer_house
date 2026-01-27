@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'auth_service.dart';
 import '../pastor/pastor_shell.dart';
-import '../member/member_home_screen.dart';
+import '../member/member_shell.dart';
 
 class OtpVerifyScreen extends StatefulWidget {
   final String value;
@@ -63,7 +63,7 @@ class _OtpVerifyScreenState extends State<OtpVerifyScreen> {
         } else {
           Navigator.pushAndRemoveUntil(
             context,
-            MaterialPageRoute(builder: (_) => const MemberHomeScreen()),
+            MaterialPageRoute(builder: (_) => const MemberShell()),
             (_) => false,
           );
         }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'auth/login_screen.dart';
 import 'auth/auth_service.dart';
 import 'utils/navigation_helper.dart';
+import 'utils/error_handler.dart';
 import 'services/notification_service.dart';
 
 void main() async {
@@ -24,6 +25,7 @@ class PPHApp extends StatelessWidget {
         primarySwatch: Colors.blue,
         useMaterial3: true,
       ),
+      navigatorKey: ErrorHandler.navigatorKey,
       home: const AuthCheckScreen(),
       debugShowCheckedModeBanner: false,
     );
@@ -53,8 +55,22 @@ class _AuthCheckScreenState extends State<AuthCheckScreen> {
     setState(() => checking = false);
 
     if (isLoggedIn) {
-      // Navigate to appropriate home based on role
-      await NavigationHelper.navigateToHome(context);
+      // Check user status before navigating (catches blocked users)
+      await ErrorHandler.checkUserStatus(context);
+      
+      // Re-check if still logged in (might have been logged out by error handler)
+      final stillLoggedIn = await AuthService.isLoggedIn();
+      if (!mounted) return;
+      
+      if (stillLoggedIn) {
+        // Navigate to appropriate home based on role
+        await NavigationHelper.navigateToHome(context);
+      } else {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const LoginScreen()),
+        );
+      }
     } else {
       if (!mounted) return;
       Navigator.pushReplacement(

@@ -17,6 +17,7 @@ import 'member_reminders_screen.dart';
 import 'member_settings_screen.dart';
 import '../services/profile_service.dart';
 import '../utils/api_client.dart';
+import '../utils/error_handler.dart';
 
 class MemberHomeScreen extends StatefulWidget {
   const MemberHomeScreen({super.key});
@@ -41,6 +42,22 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Check user status first - if blocked, will force logout
+    _checkUserStatusAndLoad();
+  }
+
+  /// Check user status first, then load data if user is still active
+  Future<void> _checkUserStatusAndLoad() async {
+    // First, check if user is blocked/deleted
+    await ErrorHandler.checkUserStatus(context);
+    
+    // Re-check if still logged in (might have been logged out by error handler)
+    final isLoggedIn = await AuthService.isLoggedIn();
+    if (!mounted || !isLoggedIn) {
+      return; // User was logged out, don't load data
+    }
+    
+    // User is still active, proceed with loading
     _loadMemberInfo();
     _loadTodayPrayers();
     _loadTodayEvents();
@@ -58,6 +75,8 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      // Check if user is blocked/deleted when app resumes
+      ErrorHandler.checkUserStatus(context);
       _loadTodayPrayers(); // Force refresh when app comes to foreground
       _loadTodayEvents();
     } else if (state == AppLifecycleState.paused) {
@@ -69,8 +88,26 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
 
   void _startAutoRefresh() {
     _refreshTimer?.cancel();
-    _refreshTimer = Timer.periodic(const Duration(seconds: 45), (_) {
+    _refreshTimer = Timer.periodic(const Duration(seconds: 45), (_) async {
       if (mounted) {
+        // Check if user is still logged in before refreshing
+        final isLoggedIn = await AuthService.isLoggedIn();
+        if (!isLoggedIn || !mounted) {
+          _refreshTimer?.cancel(); // Stop timer if user was logged out
+          return;
+        }
+        
+        // Check user status - if blocked, will force logout
+        await ErrorHandler.checkUserStatus(context);
+        
+        // Re-check if still logged in after status check
+        final stillLoggedIn = await AuthService.isLoggedIn();
+        if (!stillLoggedIn || !mounted) {
+          _refreshTimer?.cancel(); // Stop timer if user was logged out
+          return;
+        }
+        
+        // User is still active, proceed with refresh
         _loadTodayPrayers(silent: true);
         _loadTodayEvents(silent: true);
       }
@@ -83,9 +120,18 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
       memberName = prefs.getString("name") ?? prefs.getString("username") ?? "Member";
     });
     
-    // Load profile image
+    // Load profile image - this also checks user status (blocked/deleted)
     try {
-      final profile = await ProfileService.getProfile();
+      final profile = await ProfileService.getProfile(context: context);
+      
+      // If profile is null, user might have been logged out (blocked/deleted)
+      if (profile == null) {
+        final isLoggedIn = await AuthService.isLoggedIn();
+        if (!isLoggedIn || !mounted) {
+          return; // User was logged out, stop loading
+        }
+      }
+      
       if (profile != null && mounted) {
         setState(() {
           profileImageUrl = profile["profile_image_url"];
@@ -121,13 +167,25 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
   }
 
   Future<void> _loadTodayPrayers({bool silent = false}) async {
+    // Check if user is still logged in before loading
+    final isLoggedIn = await AuthService.isLoggedIn();
+    if (!isLoggedIn || !mounted) {
+      return; // User was logged out, stop loading
+    }
+    
     if (!silent) {
       setState(() => _loading = true);
     }
 
     try {
       // Use occurrences API with "today" tab (already filters for today and excludes completed)
-      final todayList = await PrayerService.getPrayerOccurrences(tab: "today");
+      final todayList = await PrayerService.getPrayerOccurrences(tab: "today", context: context);
+      
+      // Re-check if still logged in after API call (might have been logged out)
+      final stillLoggedIn = await AuthService.isLoggedIn();
+      if (!stillLoggedIn || !mounted) {
+        return; // User was logged out during API call
+      }
       
       if (mounted) {
         // Compute status dynamically and update in the list
@@ -178,8 +236,20 @@ class _MemberHomeScreenState extends State<MemberHomeScreen> with WidgetsBinding
   }
 
   Future<void> _loadTodayEvents({bool silent = false}) async {
+    // Check if user is still logged in before loading
+    final isLoggedIn = await AuthService.isLoggedIn();
+    if (!isLoggedIn || !mounted) {
+      return; // User was logged out, stop loading
+    }
+    
     try {
-      final events = await EventService.getEventOccurrences();
+      final events = await EventService.getEventOccurrences(context: context);
+      
+      // Re-check if still logged in after API call (might have been logged out)
+      final stillLoggedIn = await AuthService.isLoggedIn();
+      if (!stillLoggedIn || !mounted) {
+        return; // User was logged out during API call
+      }
       final now = DateTime.now();
       final todayStart = DateTime(now.year, now.month, now.day);
       final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);

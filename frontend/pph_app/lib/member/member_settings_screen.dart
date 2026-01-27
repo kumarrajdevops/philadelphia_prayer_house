@@ -59,7 +59,7 @@ class _MemberSettingsScreenState extends State<MemberSettingsScreen> {
   Future<void> _loadProfile() async {
     setState(() => _isLoading = true);
     try {
-      final profile = await ProfileService.getProfile();
+      final profile = await ProfileService.getProfile(context: context);
       if (profile != null) {
         setState(() {
           _profile = profile;
